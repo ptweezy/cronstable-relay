@@ -128,10 +128,10 @@ export function apnsPayload(msg: ApnsMessage): Record<string, unknown> {
     aps: {
       // The stub the user sees only if the NSE never got to run; it
       // must be useful without leaking anything (there is nothing to
-      // leak — the relay never has plaintext to include).
+      // leak: the relay never has plaintext to include).
       alert: {
         title: "cronstable",
-        body: "New alert — open to view.",
+        body: "New alert. Open to view.",
       },
       "mutable-content": 1,
       "interruption-level": interruption,

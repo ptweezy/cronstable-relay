@@ -36,7 +36,7 @@ function json(
   });
 }
 
-/** First 8 hex chars of SHA-256(token): log correlation without ever
+/** First 8 hex chars of SHA-256(token): log correlation without
  * writing a routable device token into logs. */
 async function deviceLogId(token: string): Promise<string> {
   const digest = await crypto.subtle.digest(

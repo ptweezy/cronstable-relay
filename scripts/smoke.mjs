@@ -4,11 +4,11 @@
  *
  *   npm run smoke -- https://relay.cronstable.com/
  *
- * Sends a well-formed envelope with a synthetic device token. The
- * expected answer from a healthy, correctly credentialed relay is 410:
- * APNs accepted the relay's provider token, then rejected the unknown
- * device. 502 means APNs credentials/connectivity need attention; 202
- * would mean the token was somehow real (never with this token).
+ * Sends a well-formed envelope with a synthetic device token. A
+ * healthy, correctly credentialed relay answers 410: APNs accepted the
+ * relay's provider token, then rejected the unknown device. 502 means
+ * APNs credentials/connectivity need attention; 202 would mean the
+ * token was somehow real (never with this token).
  */
 
 const url = process.argv[2];
@@ -48,7 +48,7 @@ console.log(`POST ${url} -> ${res.status} ${body}`);
 if (res.status === 410) {
   console.log("OK: relay authenticated to APNs; unknown token rejected.");
 } else if (res.status === 502) {
-  console.error("FAIL: relay could not deliver — check APNS_* secrets.");
+  console.error("FAIL: relay could not deliver; check APNS_* secrets.");
   process.exit(1);
 } else {
   console.log("Unexpected status for a synthetic token; inspect above.");

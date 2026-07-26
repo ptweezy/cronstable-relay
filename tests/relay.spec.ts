@@ -1,6 +1,6 @@
 /**
  * End-to-end tests: real worker, real Durable Objects, real JWT
- * signing — only APNs itself is a network mock.  The policy windows
+ * signing; only APNs itself is a network mock.  The policy windows
  * are shrunk via vitest.config.mts (dedup 2 s, rate capacity 5 at
  * 1 token/s, flap after 3 forwards / 60 s window) so the sleep-based
  * cases stay fast.

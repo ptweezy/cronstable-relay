@@ -103,10 +103,10 @@ export class DeviceState extends DurableObject<Env> {
       };
     }
 
-    // Forward.  The forward is recorded BEFORE the APNs call: while we
-    // await Apple the input gate is open, and a cluster sibling posting
-    // the same alert must read "already forwarded" and coalesce rather
-    // than triple-send (and triple-count toward flap suppression).  On
+    // Forward.  Record it BEFORE the APNs call: while we await Apple
+    // the input gate is open, and a cluster sibling posting the same
+    // alert must read "already forwarded" and coalesce rather than
+    // triple-send (and triple-count toward flap suppression).  On
     // failure the record is rolled back so the alert stays eligible.
     const optimistic = recordForward(result.collapse, now);
     await this.ctx.storage.put({

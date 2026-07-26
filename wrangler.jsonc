@@ -7,7 +7,7 @@
   // Deploys to <name>.<account>.workers.dev until the custom domain is
   // live.  Once the cronstable.com zone is active on the Cloudflare
   // account, uncomment the route below, set workers_dev to false and
-  // redeploy — the relay then answers at https://relay.cronstable.com/.
+  // redeploy; the relay then answers at https://relay.cronstable.com/.
   "workers_dev": true,
   // "routes": [{ "pattern": "relay.cronstable.com", "custom_domain": true }],
 

@@ -11,15 +11,15 @@
  *
  *   1. Coalesce: the same (device, collapseId) forwarded less than
  *      dedupWindow ago is the same alert reported again (typically by
- *      another node of a cluster) — accept without forwarding.
+ *      another node of a cluster), so it is accepted without forwarding.
  *   2. Flap suppression: once flapMaxForwards notifications for one
  *      collapseId have been forwarded within flapWindow, the id is
  *      "cooled": at most one heartbeat forward per cooldownInterval
  *      until it has been quiet for flapReset.  A job failing in a tight
  *      loop pages once, then reminds, instead of streaming.
  *   3. Rate limit: a token bucket per device token bounds what one
- *      device can be sent regardless of how many ids are involved —
- *      the admission control an unauthenticated relay relies on.
+ *      device can be sent regardless of how many ids are involved
+ *      (the admission control an unauthenticated relay relies on).
  *
  * Suppressed and coalesced posts are accepted (2xx): the relay has
  * taken responsibility, and delivering nothing IS the policy.  Only the
@@ -107,7 +107,7 @@ function refill(
  * Admit one envelope.  Returns the decision plus the successor states,
  * which the caller persists; a token is consumed only by "forward".
  * A forward that then succeeds against APNs must be recorded with
- * `recordForward` — admission alone never marks one.
+ * `recordForward`; admission alone never marks one.
  */
 export function admit(
   collapseIn: CollapseState | undefined,

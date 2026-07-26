@@ -2,7 +2,7 @@ node_modules/
 .wrangler/
 dist/
 
-# Local secrets for `wrangler dev` — never committed.
+# Local secrets for `wrangler dev`, never committed.
 .dev.vars
 .dev.vars.*
 
