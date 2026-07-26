@@ -1,0 +1,22 @@
+{
+  "name": "cronstable-relay",
+  "version": "0.0.0",
+  "private": true,
+  "description": "End-to-end encrypted push relay for cronstable (Cloudflare Workers + Durable Objects)",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.8.71",
+    "@cloudflare/workers-types": "^4.20250906.0",
+    "typescript": "^5.5.4",
+    "vitest": "~3.2.0",
+    "wrangler": "~4.35.0"
+  }
+}

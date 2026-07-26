@@ -1,0 +1,13 @@
+node_modules/
+.wrangler/
+dist/
+
+# Local secrets for `wrangler dev` — never committed.
+.dev.vars
+.dev.vars.*
+
+# Real APNs auth keys must never enter this repo.  The one exception is
+# the throwaway key the test suite signs with (generated for tests,
+# never registered with Apple).
+*.p8
+!tests/fixtures/test-apns-key.p8
