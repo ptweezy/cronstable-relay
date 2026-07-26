@@ -4,11 +4,13 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-07-22",
 
-  // The relay answers at https://relay.cronstable.com/ (the hostname
-  // daemons put in push.relay.url).  workers_dev stays on as a fallback
-  // path to the same Worker; it costs nothing and keeps a way in if the
-  // custom domain is ever mid-change.
-  "workers_dev": true,
+  // https://relay.cronstable.com/ is the relay's only address: the
+  // hostname daemons put in push.relay.url, and the one an operator can
+  // check against this source.  The workers.dev route and the per-version
+  // preview URLs are both off, so there is no second, unversioned way in
+  // (preview URLs default to ON whenever workers_dev is enabled).
+  "workers_dev": false,
+  "preview_urls": false,
   "routes": [{ "pattern": "relay.cronstable.com", "custom_domain": true }],
 
   "observability": { "enabled": true },
