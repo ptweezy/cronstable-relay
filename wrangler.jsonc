@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "cronstable-relay",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-01",
+  "compatibility_date": "2026-07-22",
 
   // Deploys to <name>.<account>.workers.dev until the custom domain is
   // live.  Once the cronstable.com zone is active on the Cloudflare

@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -13,7 +13,7 @@ function auth(overrides: Partial<ApnsAuth> = {}): ApnsAuth {
   return {
     teamId: "TESTTEAM99",
     keyId: "TESTKEY999",
-    privateKeyPem: env.APNS_AUTH_KEY!,
+    privateKeyPem: env.APNS_AUTH_KEY,
     ...overrides,
   };
 }
@@ -68,7 +68,7 @@ describe("providerToken", () => {
     const [header, claims, signature] = token.split(".");
     const verified = await crypto.subtle.verify(
       { name: "ECDSA", hash: "SHA-256" },
-      await publicKeyFromPem(env.APNS_AUTH_KEY!),
+      await publicKeyFromPem(env.APNS_AUTH_KEY),
       b64urlDecode(signature!),
       new TextEncoder().encode(`${header}.${claims}`),
     );

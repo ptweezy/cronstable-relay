@@ -1,24 +1,32 @@
 /**
  * End-to-end tests: real worker, real Durable Objects, real JWT
- * signing; only APNs itself is a network mock.  The policy windows
- * are shrunk via vitest.config.mts (dedup 2 s, rate capacity 5 at
- * 1 token/s, flap after 3 forwards / 60 s window) so the sleep-based
- * cases stay fast.
+ * signing — only APNs itself is stubbed (tests/apns-mock.ts, which
+ * replaces the `fetchMock` removed in the Vitest 4 integration).  The
+ * policy windows are shrunk via vitest.config.mts (dedup 2 s, rate
+ * capacity 5 at 1 token/s, flap after 3 forwards / 60 s window) so the
+ * sleep-based cases stay fast.
  */
 
-import { fetchMock, SELF } from "cloudflare:test";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { exports } from "cloudflare:workers";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-const PROD = "https://api.push.apple.com";
-const SANDBOX = "https://api.sandbox.push.apple.com";
+import {
+  apnsRequests,
+  expectApns,
+  expectNoPendingApns,
+  installApnsMock,
+  PROD,
+  resetApnsMock,
+  SANDBOX,
+} from "./apns-mock";
 
-beforeAll(() => {
-  fetchMock.activate();
-  fetchMock.disableNetConnect();
+beforeEach(() => {
+  resetApnsMock();
+  installApnsMock();
 });
 
 afterEach(() => {
-  fetchMock.assertNoPendingInterceptors();
+  expectNoPendingApns();
 });
 
 let deviceCounter = 0;
@@ -49,67 +57,30 @@ function envelope(
   };
 }
 
+/** Drive the worker's default export directly (the old `SELF.fetch`). */
 async function post(body: unknown): Promise<Response> {
-  return SELF.fetch("https://relay.test/", {
+  return exports.default.fetch("https://relay.test/", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: typeof body === "string" ? body : JSON.stringify(body),
   });
 }
 
-interface Captured {
-  path: string;
-  headers: Record<string, string>;
-  body: string;
-}
-
-/** Arm one interception and capture what the relay sent to "APNs". */
-function apnsExpect(
-  origin: string,
-  status: number,
-  replyBody = "",
-  captures?: Captured[],
-): void {
-  const captured: Partial<Captured> = {};
-  fetchMock
-    .get(origin)
-    .intercept({
-      method: "POST",
-      path: (p) => {
-        captured.path = p;
-        return p.startsWith("/3/device/");
-      },
-      headers: (h) => {
-        captured.headers = Object.fromEntries(
-          Object.entries(h).map(([k, v]) => [k.toLowerCase(), String(v)]),
-        );
-        return true;
-      },
-      body: (b) => {
-        captured.body = String(b);
-        // undici may evaluate matchers more than once per request;
-        // record the request object only once.
-        if (captures && !captures.includes(captured as Captured)) {
-          captures.push(captured as Captured);
-        }
-        return true;
-      },
-    })
-    .reply(status, replyBody);
-}
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("HTTP surface", () => {
   it("serves a plain-text description on GET /", async () => {
-    const res = await SELF.fetch("https://relay.test/");
+    const res = await exports.default.fetch("https://relay.test/");
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("cronstable-relay");
   });
 
   it("404s other paths and 405s other methods", async () => {
-    expect((await SELF.fetch("https://relay.test/other")).status).toBe(404);
-    const res = await SELF.fetch("https://relay.test/", { method: "PUT" });
+    const notFound = await exports.default.fetch("https://relay.test/other");
+    expect(notFound.status).toBe(404);
+    const res = await exports.default.fetch("https://relay.test/", {
+      method: "PUT",
+    });
     expect(res.status).toBe(405);
     expect(res.headers.get("allow")).toBe("GET, HEAD, POST");
   });
@@ -132,15 +103,14 @@ describe("HTTP surface", () => {
 
 describe("forwarding", () => {
   it("forwards a sealed alert to APNs intact", async () => {
-    const captures: Captured[] = [];
-    apnsExpect(PROD, 200, "", captures);
+    expectApns(PROD, 200);
     const body = envelope();
     const res = await post(body);
     expect(res.status).toBe(202);
     expect(await res.json()).toEqual({ v: 1, outcome: "forwarded" });
 
-    expect(captures).toHaveLength(1);
-    const sent = captures[0]!;
+    expect(apnsRequests()).toHaveLength(1);
+    const sent = apnsRequests()[0]!;
     expect(sent.path).toBe(`/3/device/${body.device}`);
     expect(sent.headers["apns-topic"]).toBe("test.cronstable.app");
     expect(sent.headers["apns-push-type"]).toBe("alert");
@@ -167,11 +137,10 @@ describe("forwarding", () => {
   });
 
   it("maps passive priority to APNs priority 5, no sound", async () => {
-    const captures: Captured[] = [];
-    apnsExpect(PROD, 200, "", captures);
+    expectApns(PROD, 200);
     const res = await post(envelope({ priority: "passive" }));
     expect(res.status).toBe(202);
-    const sent = captures[0]!;
+    const sent = apnsRequests()[0]!;
     expect(sent.headers["apns-priority"]).toBe("5");
     const payload = JSON.parse(sent.body) as { aps: Record<string, unknown> };
     expect(payload.aps["interruption-level"]).toBe("passive");
@@ -179,19 +148,18 @@ describe("forwarding", () => {
   });
 
   it("stays under the APNs cap with a maximum-size ciphertext", async () => {
-    const captures: Captured[] = [];
-    apnsExpect(PROD, 200, "", captures);
+    expectApns(PROD, 200);
     const res = await post(envelope({ ciphertext: "A".repeat(3000) }));
     expect(res.status).toBe(202);
     expect(
-      new TextEncoder().encode(captures[0]!.body).length,
+      new TextEncoder().encode(apnsRequests()[0]!.body).length,
     ).toBeLessThanOrEqual(4096);
   });
 });
 
 describe("delivery policy", () => {
   it("coalesces a cluster's duplicate, then forwards after the window", async () => {
-    apnsExpect(PROD, 200);
+    expectApns(PROD, 200);
     const body = envelope();
     expect(await (await post(body)).json()).toEqual({
       v: 1,
@@ -203,7 +171,7 @@ describe("delivery policy", () => {
       outcome: "coalesced",
     });
     await sleep(2_100); // past RELAY_DEDUP_WINDOW_S = 2
-    apnsExpect(PROD, 200);
+    expectApns(PROD, 200);
     expect(await (await post(body)).json()).toEqual({
       v: 1,
       outcome: "forwarded",
@@ -213,7 +181,7 @@ describe("delivery policy", () => {
   it("suppresses a flapping alert after 3 forwards, accepting quietly", async () => {
     const body = envelope();
     for (let i = 0; i < 3; i += 1) {
-      apnsExpect(PROD, 200);
+      expectApns(PROD, 200);
       expect(await (await post(body)).json()).toEqual({
         v: 1,
         outcome: "forwarded",
@@ -234,7 +202,7 @@ describe("delivery policy", () => {
   it("rate-limits a device once the bucket is spent", async () => {
     const device = freshDevice();
     for (let i = 0; i < 5; i += 1) {
-      apnsExpect(PROD, 200);
+      expectApns(PROD, 200);
       const res = await post(envelope({ device }));
       expect(res.status).toBe(202);
     }
@@ -252,32 +220,37 @@ describe("delivery policy", () => {
 describe("APNs environments and errors", () => {
   it("falls back to sandbox on BadDeviceToken and remembers it", async () => {
     const device = freshDevice();
-    apnsExpect(PROD, 400, JSON.stringify({ reason: "BadDeviceToken" }));
-    apnsExpect(SANDBOX, 200);
+    expectApns(PROD, 400, JSON.stringify({ reason: "BadDeviceToken" }));
+    expectApns(SANDBOX, 200);
     const res = await post(envelope({ device }));
     expect(res.status).toBe(202);
     expect(await res.json()).toEqual({ v: 1, outcome: "forwarded" });
 
     // Next alert for this device goes straight to sandbox: only a
-    // sandbox interception is armed, so a production attempt would
-    // fail the unmatched-request check.
-    apnsExpect(SANDBOX, 200);
+    // sandbox reply is armed, so a production attempt would throw.
+    expectApns(SANDBOX, 200);
     const next = await post(envelope({ device }));
     expect(next.status).toBe(202);
     expect(await next.json()).toEqual({ v: 1, outcome: "forwarded" });
+    expect(apnsRequests().map((r) => r.origin)).toEqual([
+      PROD,
+      SANDBOX,
+      SANDBOX,
+    ]);
   });
 
   it("410s an Unregistered token without trying the other environment", async () => {
-    apnsExpect(PROD, 410, JSON.stringify({ reason: "Unregistered" }));
+    expectApns(PROD, 410, JSON.stringify({ reason: "Unregistered" }));
     const res = await post(envelope());
     expect(res.status).toBe(410);
     const body = (await res.json()) as { error: string; reason: string };
     expect(body.reason).toBe("Unregistered");
     expect(body.error).toMatch(/rejected/);
+    expect(apnsRequests()).toHaveLength(1);
   });
 
   it("502s when APNs rejects the relay's own credentials", async () => {
-    apnsExpect(PROD, 403, JSON.stringify({ reason: "InvalidProviderToken" }));
+    expectApns(PROD, 403, JSON.stringify({ reason: "InvalidProviderToken" }));
     const res = await post(envelope());
     expect(res.status).toBe(502);
     expect(((await res.json()) as { error: string }).error).toMatch(
@@ -287,11 +260,11 @@ describe("APNs environments and errors", () => {
 
   it("502s on APNs server trouble and stays deliverable after", async () => {
     const body = envelope();
-    apnsExpect(PROD, 500, JSON.stringify({ reason: "InternalServerError" }));
+    expectApns(PROD, 500, JSON.stringify({ reason: "InternalServerError" }));
     expect((await post(body)).status).toBe(502);
     // The failed forward was rolled back: the same alert forwards
     // as soon as APNs recovers, with no dedup shadow.
-    apnsExpect(PROD, 200);
+    expectApns(PROD, 200);
     const retry = await post(body);
     expect(retry.status).toBe(202);
     expect(await retry.json()).toEqual({ v: 1, outcome: "forwarded" });

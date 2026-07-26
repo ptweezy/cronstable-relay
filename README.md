@@ -107,8 +107,8 @@ are sealed: you don't have to trust it with anything.
 ### Deploy
 
 Prerequisites: a Cloudflare account (the free plan is enough; the
-Durable Objects here are SQLite-backed), Node 20+, and an Apple
-Developer account for the APNs key.
+Durable Objects here are SQLite-backed), Node 22+ (CI builds on the 24
+LTS), and an Apple Developer account for the APNs key.
 
 1. Create the APNs auth key: developer.apple.com → Certificates,
    Identifiers & Profiles → Keys → add a key with the **Apple Push
@@ -150,10 +150,18 @@ on the daemon, or the dashboard's test button.
 
 ```sh
 npm install
-npm run typecheck
-npm test          # vitest + workerd; APNs is mocked at the network edge
+npm run types     # regenerate worker-configuration.d.ts from wrangler.jsonc
+npm run typecheck # runs `npm run types` first, so this is enough on its own
+npm test          # vitest + workerd; only APNs is stubbed
 npm run dev       # local relay on http://localhost:8787
 ```
+
+Binding and runtime types come from `wrangler types`, which supersedes
+`@cloudflare/workers-types`. The generated `worker-configuration.d.ts`
+is *not* committed (half a megabyte of machine-written declarations
+would drown every diff): `npm run typecheck` regenerates it, and editors
+pick it up after one `npm run types`. Rerun it after changing
+`wrangler.jsonc`.
 
 `.dev.vars` (gitignored) can hold the `APNS_*` secrets for `wrangler
 dev` against real sandbox APNs.
