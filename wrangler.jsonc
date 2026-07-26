@@ -2,14 +2,16 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "cronstable-relay",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-01",
+  "compatibility_date": "2026-07-22",
 
-  // Deploys to <name>.<account>.workers.dev until the custom domain is
-  // live.  Once the cronstable.com zone is active on the Cloudflare
-  // account, uncomment the route below, set workers_dev to false and
-  // redeploy — the relay then answers at https://relay.cronstable.com/.
-  "workers_dev": true,
-  // "routes": [{ "pattern": "relay.cronstable.com", "custom_domain": true }],
+  // https://relay.cronstable.com/ is the relay's only address: the
+  // hostname daemons put in push.relay.url, and the one an operator can
+  // check against this source.  The workers.dev route and the per-version
+  // preview URLs are both off, so there is no second, unversioned way in
+  // (preview URLs default to ON whenever workers_dev is enabled).
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "relay.cronstable.com", "custom_domain": true }],
 
   "observability": { "enabled": true },
 

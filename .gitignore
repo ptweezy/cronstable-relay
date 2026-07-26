@@ -2,7 +2,13 @@ node_modules/
 .wrangler/
 dist/
 
-# Local secrets for `wrangler dev` — never committed.
+# Runtime + binding types, generated from wrangler.jsonc by `wrangler
+# types` (npm run types, and automatically before npm run typecheck).
+# Half a megabyte of machine-written declarations that would otherwise
+# dominate every diff in a repo meant to be read.
+worker-configuration.d.ts
+
+# Local secrets for `wrangler dev`, never committed.
 .dev.vars
 .dev.vars.*
 
