@@ -121,13 +121,19 @@ LTS), and an Apple Developer account for the APNs key.
    ```sh
    npx wrangler secret put APNS_TEAM_ID
    npx wrangler secret put APNS_KEY_ID
-   npx wrangler secret put APNS_AUTH_KEY   # paste the whole .p8 file, BEGIN/END lines included
+   npx wrangler secret put APNS_AUTH_KEY < AuthKey_XXXXXXXXXX.p8
    ```
 
-5. `npm run deploy`; the relay is live on your `workers.dev` subdomain.
-6. Custom domain (optional): with your zone active on the Cloudflare
-   account, uncomment the `routes` line in `wrangler.jsonc`, set
-   `workers_dev` to `false`, and deploy again.
+   The auth key is a multi-line PEM, so feed it the file rather than
+   pasting at the prompt.
+
+5. `npm run deploy`. First deploy on a fresh account fails with "You
+   need a workers.dev subdomain" until you have opened Workers & Pages
+   in the dashboard once, which creates it.
+6. Custom domain: point the zone's nameservers at Cloudflare, then set
+   `routes` in `wrangler.jsonc` to your hostname and deploy again. The
+   DNS record and certificate are created for you; the certificate takes
+   a few minutes, during which TLS handshakes to it fail.
 7. Point daemons at it:
 
    ```yaml
