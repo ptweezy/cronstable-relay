@@ -25,7 +25,7 @@
   //   wrangler secret put APNS_KEY_ID
   //   wrangler secret put APNS_AUTH_KEY   (paste the whole .p8 PEM)
   "vars": {
-    "APNS_TOPIC": "ptweezy.cronstable-ios",
+    "APNS_TOPIC": "com.cronstable.app",
     "APNS_ENVIRONMENT": "auto"
   }
 }
