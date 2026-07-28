@@ -4,6 +4,15 @@
   "private": true,
   "description": "End-to-end encrypted push relay for cronstable (Cloudflare Workers + Durable Objects)",
   "license": "MIT",
+  "author": "Parker Loflin <ptweezy@runforyour.money>",
+  "homepage": "https://github.com/ptweezy/cronstable-relay",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ptweezy/cronstable-relay.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ptweezy/cronstable-relay/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",

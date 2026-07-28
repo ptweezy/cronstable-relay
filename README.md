@@ -104,6 +104,14 @@ contract). Alerts for the official cronstable app can only transit the
 official relay. That is why its source is published and its payloads
 are sealed: you don't have to trust it with anything.
 
+The MIT License covers this code, not the cronstable name or logo. If
+you run a public deployment or distribute a fork, please give it a
+distinct name so users can tell it apart from the official relay: the
+brand appears in the landing banner (`INFO` in `src/index.ts`) and in
+the fallback alert title (`src/apns.ts`), and both should change. See
+[TRADEMARKS.md](https://github.com/ptweezy/cronstable/blob/main/TRADEMARKS.md)
+in the core repository.
+
 ### Deploy
 
 Prerequisites: a Cloudflare account (the free plan is enough; the
@@ -177,3 +185,7 @@ dev` against real sandbox APNs.
 MIT; see [LICENSE](LICENSE). Contributions are DCO-certified
 (`git commit -s`), same as cronstable itself; see
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+cronstable™ and the cronstable logo are trademarks of Parker Loflin and
+are not licensed by the MIT grant; see
+[TRADEMARKS.md](https://github.com/ptweezy/cronstable/blob/main/TRADEMARKS.md).
