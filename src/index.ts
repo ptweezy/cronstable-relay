@@ -10,6 +10,7 @@
  */
 
 import { MAX_BODY_BYTES, parseEnvelope } from "./validate";
+import { PAIR_AASA, PAIR_HTML } from "./pair";
 import { PRIVACY_HTML } from "./privacy";
 import type { DeliverOutcome, Env } from "./types";
 
@@ -58,6 +59,25 @@ export default {
       }
       return new Response(PRIVACY_HTML, {
         headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+    // The dashboard QR's landing page (src/pair.ts).  The pairing payload
+    // is in the URL fragment, so it never appears in these requests.
+    if (url.pathname === "/pair") {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return json(405, { v: 1, error: "method not allowed" }, { allow: "GET, HEAD" });
+      }
+      return new Response(PAIR_HTML, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+    // Apple's CDN fetches this to activate /pair as a universal link.
+    if (url.pathname === "/.well-known/apple-app-site-association") {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return json(405, { v: 1, error: "method not allowed" }, { allow: "GET, HEAD" });
+      }
+      return new Response(PAIR_AASA, {
+        headers: { "content-type": "application/json" },
       });
     }
     if (url.pathname !== "/") {
