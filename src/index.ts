@@ -10,6 +10,7 @@
  */
 
 import { MAX_BODY_BYTES, parseEnvelope } from "./validate";
+import { PRIVACY_HTML } from "./privacy";
 import type { DeliverOutcome, Env } from "./types";
 
 export { DeviceState } from "./device";
@@ -51,6 +52,14 @@ async function deviceLogId(token: string): Promise<string> {
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/privacy") {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return json(405, { v: 1, error: "method not allowed" }, { allow: "GET, HEAD" });
+      }
+      return new Response(PRIVACY_HTML, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
     if (url.pathname !== "/") {
       return json(404, { v: 1, error: "not found" });
     }

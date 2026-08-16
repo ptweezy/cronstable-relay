@@ -75,6 +75,18 @@ describe("HTTP surface", () => {
     expect(await res.text()).toContain("cronstable-relay");
   });
 
+  it("serves the privacy policy on GET /privacy, read-only", async () => {
+    const res = await exports.default.fetch("https://relay.test/privacy");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("Privacy Policy");
+    const post = await exports.default.fetch("https://relay.test/privacy", {
+      method: "POST",
+    });
+    expect(post.status).toBe(405);
+    expect(post.headers.get("allow")).toBe("GET, HEAD");
+  });
+
   it("404s other paths and 405s other methods", async () => {
     const notFound = await exports.default.fetch("https://relay.test/other");
     expect(notFound.status).toBe(404);
