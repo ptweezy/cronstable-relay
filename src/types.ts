@@ -11,7 +11,7 @@ export interface Envelope {
   v: 1;
   /** APNs device token, normalized to lowercase hex. */
   device: string;
-  /** Sealed alert, base64, at most 3000 characters. */
+  /** Sealed alert, base64, at most MAX_CIPHERTEXT_CHARS characters. */
   ciphertext: string;
   /** Opaque coalescing key: 32 lowercase hex characters. */
   collapseId: string;
@@ -19,6 +19,13 @@ export interface Envelope {
   priority: "time-sensitive" | "passive";
   /** True for daemon events (the notify: fan-out); routing metadata only. */
   event: boolean;
+  /**
+   * The sealing suite the ciphertext was produced under, forwarded to the
+   * app so it knows which key opens it.  Defaulted to "x25519" when the
+   * daemon omits it.  Opaque to the relay: an unrecognized value is
+   * forwarded, never rejected.
+   */
+  suite: string;
 }
 
 /** What a Durable Object hands back for the worker to turn into HTTP. */

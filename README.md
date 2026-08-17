@@ -10,8 +10,9 @@ their alert traffic passes through.
 daemon ──sealed box──▶ this relay ──APNs──▶ device (NSE decrypts locally)
 ```
 
-A cronstable daemon seals every alert to each paired device's X25519
-public key (a libsodium sealed box) before it leaves the machine, then
+A cronstable daemon seals every alert to each paired device's public
+key (by default a libsodium sealed box over X25519; the envelope's
+`suite` names the algorithm) before it leaves the machine, then
 POSTs one envelope per (alert, device) here. The relay coalesces
 duplicates, suppresses flapping, rate-limits, and forwards the
 still-sealed ciphertext to Apple. The app's Notification Service
@@ -27,7 +28,10 @@ The relay is not a trusted party, by design:
 - **What an envelope carries:** an APNs device token, the ciphertext,
   a `collapseId` (a truncated SHA-256, keyed with a per-installation
   salt the relay never sees, so not invertible even for guessable job
-  names), a `priority` hint, and an `event` routing flag.
+  names), a `priority` hint, an `event` routing flag, and a `suite`
+  naming the sealing algorithm (so the app knows which key opens the
+  ciphertext without guessing from its length). None of them says
+  anything about what the alert is.
 - **Logs:** outcome, priority, the first 8 hex chars of the device
   token's SHA-256, and a `collapseId` prefix. Device tokens and
   ciphertexts are never logged.
