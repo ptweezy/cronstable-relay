@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { MAX_CIPHERTEXT_CHARS, parseEnvelope } from "../src/validate";
+import {
+  MAX_CIPHERTEXT_CHARS,
+  SUITE_MAX_CHARS,
+  parseEnvelope,
+} from "../src/validate";
 
 function valid(): Record<string, unknown> {
   return {
@@ -131,6 +135,12 @@ describe("parseEnvelope suites", () => {
     // derived from.
     expect(errorOf({ ...valid(), suite: 7 })).toMatch(/suite/);
     expect(errorOf({ ...valid(), suite: "A".repeat(64) })).toMatch(/suite/);
+    // Exactly the grammar's edge: SUITE_MAX_CHARS is in, one more is out.
+    expect(envelopeOf({ ...valid(), suite: "s".repeat(SUITE_MAX_CHARS) }).suite)
+      .toBe("s".repeat(SUITE_MAX_CHARS));
+    expect(
+      errorOf({ ...valid(), suite: "s".repeat(SUITE_MAX_CHARS + 1) }),
+    ).toMatch(/suite/);
     expect(errorOf({ ...valid(), suite: "Has Spaces" })).toMatch(/suite/);
     expect(errorOf({ ...valid(), suite: "" })).toMatch(/suite/);
   });

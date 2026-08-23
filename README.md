@@ -146,7 +146,13 @@ LTS), and an Apple Developer account for the APNs key.
    `routes` in `wrangler.jsonc` to your hostname and deploy again. The
    DNS record and certificate are created for you; the certificate takes
    a few minutes, during which TLS handshakes to it fail.
-7. Point daemons at it:
+7. Deploy the relay before you upgrade the daemons that post to it. A
+   daemon fits alerts to the ciphertext cap it was built with. In front
+   of a relay that enforces a smaller cap, the daemon gets a 400 for its
+   largest alerts and falls back to the protocol's 3000-character floor
+   for them, so the page lands with fewer log lines. A current relay
+   never triggers that fallback.
+8. Point daemons at it:
 
    ```yaml
    push:

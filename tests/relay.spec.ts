@@ -10,6 +10,8 @@
 import { exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { MAX_CIPHERTEXT_CHARS } from "../src/validate";
+
 import {
   apnsRequests,
   expectApns,
@@ -161,7 +163,10 @@ describe("forwarding", () => {
 
   it("stays under the APNs cap with a maximum-size ciphertext", async () => {
     expectApns(PROD, 200);
-    const res = await post(envelope({ ciphertext: "A".repeat(3000) }));
+    // Sized off the cap so this stays the maximum whatever the cap is.
+    const res = await post(
+      envelope({ ciphertext: "A".repeat(MAX_CIPHERTEXT_CHARS) }),
+    );
     expect(res.status).toBe(202);
     expect(
       new TextEncoder().encode(apnsRequests()[0]!.body).length,

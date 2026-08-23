@@ -52,10 +52,16 @@ const MIN_UNKNOWN_SUITE_CHARS = Math.min(
 /** relay-protocol.md: an absent suite means x25519. */
 const DEFAULT_SUITE = "x25519";
 
-/** Suite tokens are short lowercase identifiers; bound them so an
- * envelope cannot smuggle a large string through into the APNs payload
- * (where it would eat the size budget the cap above depends on). */
-const SUITE_RE = /^[a-z0-9][a-z0-9-]{0,15}$/;
+/**
+ * relay-protocol.md, "Suites": a suite identifier is 1 to SUITE_MAX_CHARS
+ * characters of [a-z0-9-], starting with a letter or digit.  Bounded
+ * because the token lands in the APNs payload, where an unbounded string
+ * would eat the size budget the cap above depends on; the daemon's
+ * reserve absorbs the widest token this allows (tests/apns-size.spec.ts
+ * pins that).
+ */
+export const SUITE_MAX_CHARS = 16;
+const SUITE_RE = new RegExp(`^[a-z0-9][a-z0-9-]{0,${SUITE_MAX_CHARS - 1}}$`);
 
 /**
  * APNs device tokens are hex (64 chars today; Apple says treat the

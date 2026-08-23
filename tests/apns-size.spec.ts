@@ -14,7 +14,7 @@
 import { describe, expect, it } from "vitest";
 
 import { APNS_PAYLOAD_MAX, ENVELOPE_BYTES, apnsPayload } from "../src/apns";
-import { MAX_CIPHERTEXT_CHARS } from "../src/validate";
+import { MAX_CIPHERTEXT_CHARS, SUITE_MAX_CHARS } from "../src/validate";
 
 /** The daemon's RELAY_ENVELOPE_RESERVE (cronstable/push.py). */
 const DAEMON_RESERVE = 107;
@@ -65,6 +65,25 @@ describe("APNs size budget", () => {
     expect(
       ENVELOPE_BYTES + MAX_CIPHERTEXT_CHARS + DAEMON_RESERVE,
     ).toBeLessThanOrEqual(APNS_PAYLOAD_MAX);
+  });
+
+  it("the widest suite token the grammar allows still fits", () => {
+    // ENVELOPE_BYTES is measured with the known suites' tokens; a suite
+    // this relay has never heard of can be SUITE_MAX_CHARS long and is
+    // forwarded, so the reserve has to cover what the extra characters
+    // cost on top of a max-length ciphertext.
+    const json = JSON.stringify(
+      apnsPayload({
+        deviceToken: "a".repeat(64),
+        ciphertext: "A".repeat(MAX_CIPHERTEXT_CHARS),
+        collapseId: "0".repeat(32),
+        priority: "time-sensitive",
+        topic: "com.example.app",
+        suite: "s".repeat(SUITE_MAX_CHARS),
+      }),
+    );
+    const size = new TextEncoder().encode(json).length;
+    expect(size).toBeLessThanOrEqual(APNS_PAYLOAD_MAX);
   });
 
   it("the passive variant is never wider than the time-sensitive one", () => {
