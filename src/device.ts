@@ -163,6 +163,7 @@ export class DeviceState extends DurableObject<Env> {
       collapseId: envelope.collapseId,
       priority: envelope.priority,
       topic: auth.topic,
+      suite: envelope.suite,
     };
     let last: ApnsResult = { status: 0, reason: null };
     for (const environment of order) {

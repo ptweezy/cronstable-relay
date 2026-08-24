@@ -15,15 +15,53 @@ import type { Envelope } from "./types";
 /** Inbound bodies are one envelope; far under this in practice. */
 export const MAX_BODY_BYTES = 8192;
 
-/** relay-protocol.md: "at most 3000 characters". */
-export const MAX_CIPHERTEXT_CHARS = 3000;
+/**
+ * relay-protocol.md, "Size budget": 4096 (the APNs cap) minus the 189
+ * bytes this relay's own APNs envelope serializes to, minus a 107-byte
+ * reserve for protocol fields added later.  tests/apns-size.spec.ts
+ * asserts the 189 against the envelope apnsPayload() really builds, so
+ * this constant rests on a measurement rather than an estimate.
+ */
+export const MAX_CIPHERTEXT_CHARS = 3800;
 
 /**
- * A sealed box is a 32-byte ephemeral public key plus a 16-byte MAC
- * around at least `{}`; anything shorter cannot be one (50 bytes → 68
- * base64 chars).  Cheap garbage rejection, not cryptographic checking.
+ * The smallest ciphertext each suite could possibly produce, in base64
+ * chars: the sealing overhead plus at least `{}`, rounded up to a base64
+ * quantum.  Cheap garbage rejection, not cryptographic checking.
+ *
+ * x25519: 32-byte ephemeral public key + 16-byte MAC + 2 = 50 B → 68.
+ * xwing:  1120-byte ciphertext + 16-byte tag + 2 = 1138 B → 1520.
  */
-const MIN_CIPHERTEXT_CHARS = 68;
+const MIN_CIPHERTEXT_CHARS: Record<string, number> = {
+  x25519: 68,
+  xwing: 1520,
+};
+
+/**
+ * The floor for a suite this relay has never heard of.  Such an envelope
+ * is still forwarded: the ciphertext is sealed to the device either way,
+ * and relay-protocol.md requires relays to treat `suite` as opaque
+ * routing metadata rather than a thing to gate on.  Recognizing a suite
+ * only buys the tighter minimum above, so an unknown one gets the
+ * loosest floor and nothing more.
+ */
+const MIN_UNKNOWN_SUITE_CHARS = Math.min(
+  ...Object.values(MIN_CIPHERTEXT_CHARS),
+);
+
+/** relay-protocol.md: an absent suite means x25519. */
+const DEFAULT_SUITE = "x25519";
+
+/**
+ * relay-protocol.md, "Suites": a suite identifier is 1 to SUITE_MAX_CHARS
+ * characters of [a-z0-9-], starting with a letter or digit.  Bounded
+ * because the token lands in the APNs payload, where an unbounded string
+ * would eat the size budget the cap above depends on; the daemon's
+ * reserve absorbs the widest token this allows (tests/apns-size.spec.ts
+ * pins that).
+ */
+export const SUITE_MAX_CHARS = 16;
+const SUITE_RE = new RegExp(`^[a-z0-9][a-z0-9-]{0,${SUITE_MAX_CHARS - 1}}$`);
 
 /**
  * APNs device tokens are hex (64 chars today; Apple says treat the
@@ -50,6 +88,14 @@ export function parseEnvelope(raw: unknown): ParseResult {
   if (typeof device !== "string" || !DEVICE_RE.test(device)) {
     return { error: "device must be a hex APNs device token" };
   }
+  const rawSuite = o.suite;
+  if (rawSuite !== undefined && typeof rawSuite !== "string") {
+    return { error: "suite must be a string" };
+  }
+  const suite = rawSuite === undefined ? DEFAULT_SUITE : rawSuite;
+  if (!SUITE_RE.test(suite)) {
+    return { error: "suite is not a valid suite identifier" };
+  }
   const ciphertext = o.ciphertext;
   if (typeof ciphertext !== "string" || ciphertext.length === 0) {
     return { error: "ciphertext is required" };
@@ -59,10 +105,11 @@ export function parseEnvelope(raw: unknown): ParseResult {
       error: `ciphertext exceeds ${MAX_CIPHERTEXT_CHARS} characters`,
     };
   }
+  const floor = MIN_CIPHERTEXT_CHARS[suite] ?? MIN_UNKNOWN_SUITE_CHARS;
   if (
     ciphertext.length % 4 !== 0 ||
     !BASE64_RE.test(ciphertext) ||
-    ciphertext.length < MIN_CIPHERTEXT_CHARS
+    ciphertext.length < floor
   ) {
     return { error: "ciphertext is not a base64 sealed box" };
   }
@@ -88,6 +135,7 @@ export function parseEnvelope(raw: unknown): ParseResult {
       collapseId,
       priority,
       event,
+      suite,
     },
   };
 }

@@ -29,6 +29,9 @@ export interface ApnsMessage {
   collapseId: string;
   priority: "time-sensitive" | "passive";
   topic: string;
+  /** Forwarded verbatim so the app's NSE knows which key opens the
+   * ciphertext without inferring the algorithm from its length. */
+  suite: string;
 }
 
 export interface ApnsResult {
@@ -120,6 +123,20 @@ export function resetProviderTokenCache(): void {
   jwtCache = null;
 }
 
+/**
+ * APNs rejects notifications whose final JSON exceeds this.  The whole
+ * size budget in relay-protocol.md hangs off it.
+ */
+export const APNS_PAYLOAD_MAX = 4096;
+
+/**
+ * What everything in apnsPayload() except the ciphertext serializes to,
+ * with the longest suite token in play.  The daemon derives its own
+ * ciphertext cap from this number, so tests/apns-size.spec.ts asserts it
+ * against the real payload rather than letting the two drift.
+ */
+export const ENVELOPE_BYTES = 189;
+
 /** Build the notification JSON APNs receives (exported for tests). */
 export function apnsPayload(msg: ApnsMessage): Record<string, unknown> {
   const interruption =
@@ -138,6 +155,7 @@ export function apnsPayload(msg: ApnsMessage): Record<string, unknown> {
       ...(interruption === "time-sensitive" ? { sound: "default" } : {}),
     },
     v: 1,
+    suite: msg.suite,
     ciphertext: msg.ciphertext,
   };
 }
