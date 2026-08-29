@@ -68,7 +68,17 @@ const SUITE_RE = new RegExp(`^[a-z0-9][a-z0-9-]{0,${SUITE_MAX_CHARS - 1}}$`);
  * length as variable).  The relay only routes to APNs in v1, so a
  * non-hex "token" can never be routable and is rejected outright.
  */
-const DEVICE_RE = /^[0-9a-fA-F]{16,512}$/;
+export const DEVICE_RE = /^[0-9a-fA-F]{16,512}$/;
+
+/**
+ * A device token as every route stores it: validated against DEVICE_RE
+ * and lowercased so one physical device is one Durable Object no matter
+ * how the token's hex was cased.  Null when the value is not a token.
+ */
+export function parseDevice(raw: unknown): string | null {
+  if (typeof raw !== "string" || !DEVICE_RE.test(raw)) return null;
+  return raw.toLowerCase();
+}
 
 const COLLAPSE_RE = /^[0-9a-f]{32}$/;
 
@@ -84,8 +94,8 @@ export function parseEnvelope(raw: unknown): ParseResult {
   if (o.v !== 1) {
     return { error: "unsupported protocol version (expected v: 1)" };
   }
-  const device = o.device;
-  if (typeof device !== "string" || !DEVICE_RE.test(device)) {
+  const device = parseDevice(o.device);
+  if (device === null) {
     return { error: "device must be a hex APNs device token" };
   }
   const rawSuite = o.suite;
@@ -128,9 +138,7 @@ export function parseEnvelope(raw: unknown): ParseResult {
   return {
     envelope: {
       v: 1,
-      // Lowercased so one physical device is one Durable Object no
-      // matter how the token's hex was cased at pairing time.
-      device: device.toLowerCase(),
+      device,
       ciphertext,
       collapseId,
       priority,

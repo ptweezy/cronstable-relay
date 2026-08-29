@@ -36,9 +36,28 @@ export interface DeliverOutcome {
   retryAfterS?: number;
 }
 
+/** What DeviceState.status() reports (POST /entitlement's 200 body,
+ * before the worker renders instants as ISO strings). */
+export interface DeviceStatus {
+  plan: "free" | "pro";
+  /** Present on "pro": epoch ms, or null for no expiry. */
+  expiresAt?: number | null;
+  /** Present on "pro". */
+  environment?: "Production" | "Sandbox";
+  /** This period's forwards so far. */
+  used: number;
+  /** The period's bound, or null when unlimited. */
+  limit: number | null;
+  /** Epoch ms of the next rollover. */
+  resetsAt: number;
+}
+
 export interface Env {
   DEVICE: DurableObjectNamespace<
     import("./device").DeviceState & Rpc.DurableObjectBranded
+  >;
+  ENTITLEMENT: DurableObjectNamespace<
+    import("./entitlement").EntitlementState & Rpc.DurableObjectBranded
   >;
 
   /** Apple push credentials; all set via `wrangler secret put`. */
@@ -64,4 +83,18 @@ export interface Env {
   RELAY_FLAP_WINDOW_S?: string;
   RELAY_COOLDOWN_INTERVAL_S?: string;
   RELAY_FLAP_RESET_S?: string;
+
+  /** Monthly delivery quota (numbers as strings; see quota.ts). */
+  RELAY_FREE_MONTHLY_FORWARDS?: string;
+  RELAY_DIGEST_INTERVAL_S?: string;
+  /** Test hook: fixed-length quota periods in seconds instead of months. */
+  RELAY_QUOTA_PERIOD_S?: string;
+
+  /** Entitlement proof (see appstore.ts and entitlement.ts). */
+  RELAY_PRO_PRODUCT_IDS?: string;
+  RELAY_ACCEPT_SANDBOX_ENTITLEMENTS?: string;
+  /** Test hook: base64 DER of a root to trust instead of Apple Root CA G3. */
+  RELAY_APPLE_ROOT_CERT?: string;
+  RELAY_PRO_DEVICES_PER_TRANSACTION?: string;
+  RELAY_PRO_DEVICE_SLOT_TTL_S?: string;
 }

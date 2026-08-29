@@ -15,17 +15,37 @@
 
   "observability": { "enabled": true },
 
+  // DEVICE: one object per push token (delivery policy, quota, the
+  // verified entitlement).  ENTITLEMENT: one per App Store transaction
+  // (the hashes of the devices it lifts, for the per-transaction cap).
   "durable_objects": {
-    "bindings": [{ "name": "DEVICE", "class_name": "DeviceState" }]
+    "bindings": [
+      { "name": "DEVICE", "class_name": "DeviceState" },
+      { "name": "ENTITLEMENT", "class_name": "EntitlementState" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DeviceState"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["DeviceState"] },
+    { "tag": "v2", "new_sqlite_classes": ["EntitlementState"] }
+  ],
 
   // Non-secret configuration.  The Apple credentials are secrets:
   //   wrangler secret put APNS_TEAM_ID
   //   wrangler secret put APNS_KEY_ID
   //   wrangler secret put APNS_AUTH_KEY   (paste the whole .p8 PEM)
+  //
+  // Every RELAY_* knob has a default in code (README, "Environment"),
+  // so only the ones worth seeing at a glance are set here:
+  //   RELAY_ACCEPT_SANDBOX_ENTITLEMENTS  "true" accepts Sandbox (TestFlight,
+  //     Xcode) StoreKit transactions as Pro proof; "false" refuses them.
+  // Also available: RELAY_FREE_MONTHLY_FORWARDS (500),
+  // RELAY_DIGEST_INTERVAL_S (3600), RELAY_PRO_PRODUCT_IDS (the two
+  // com.cronstable.app.pro.* ids), RELAY_PRO_DEVICES_PER_TRANSACTION (5),
+  // RELAY_PRO_DEVICE_SLOT_TTL_S (5184000), and the delivery-policy
+  // windows listed in the README.
   "vars": {
     "APNS_TOPIC": "com.cronstable.app",
-    "APNS_ENVIRONMENT": "auto"
+    "APNS_ENVIRONMENT": "auto",
+    "RELAY_ACCEPT_SANDBOX_ENTITLEMENTS": "true"
   }
 }

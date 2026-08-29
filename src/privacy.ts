@@ -8,7 +8,7 @@
  * Self-contained HTML: no scripts, no external assets, theme-aware.
  */
 
-const EFFECTIVE = "August 16, 2026";
+const EFFECTIVE = "August 28, 2026";
 
 export const PRIVACY_HTML = `<!doctype html>
 <html lang="en">
@@ -67,12 +67,27 @@ delivery. The alert's content (job names, hostnames, log lines) exists
 only inside the sealed message, and only your device can open it. The
 relay forwards the message still sealed and keeps no copy.</p>
 <p>The relay processes your device's Apple push token and keeps a small
-amount of per-device delivery state: rate-limit and de-duplication
-counters and the APNs environment, keyed by the push token. The relay
-deletes this state automatically as it expires. Service logs record
-only a truncated cryptographic hash of the token, which is useless for
-sending notifications. The relay's source is public:
+amount of per-device delivery state, keyed by the push token: rate-limit
+and de-duplication counters, the APNs environment, and a count of the
+alerts forwarded to the device this calendar month. The relay deletes
+this state automatically as it expires; the monthly count expires with
+the month. Service logs record only a truncated cryptographic hash of
+the token, which is useless for sending notifications. The relay's
+source is public:
 <a href="https://github.com/ptweezy/cronstable-relay">github.com/ptweezy/cronstable-relay</a>.</p>
+<p>If you subscribe to Cronstable Pro, the app sends the relay the App
+Store's signed record of your purchase so the relay can lift the free
+plan's monthly alert limit for your device. The relay checks that record
+on its own hardware and keeps, per push token, only the transaction
+identifier, the product, the expiry date, whether the purchase is a
+production or sandbox one, and when the relay checked it. It also keeps, per
+transaction, a list of cryptographic hashes of the device tokens that
+purchase covers, each with the time the relay last saw it, so one purchase
+covers a bounded number of devices. The relay never stores the signed
+record itself, and never learns the price you paid, your Apple ID, or
+anything else in the purchase beyond those fields. Entitlement records
+expire with the purchase's own expiry date, or after 60 days without
+hearing from the device.</p>
 <p>Apple receives the encrypted payload and your push token to deliver
 notifications; Apple's own privacy terms govern that delivery.</p>
 
@@ -98,8 +113,10 @@ logs are short-lived.</p>
 <h2>Retention and deletion</h2>
 <p>Unpair a device from your server (in the app, or with
 <code>cronstable push unpair</code> on the server) and alerts stop
-immediately. Relay delivery state is transient and expires on its own;
-deleting the app invalidates the push token entirely. We hold no
+immediately. Relay delivery state is transient and expires on its own:
+counters within a day of silence, the monthly count with the month, and
+entitlement records with their expiry or after 60 days of silence.
+Deleting the app invalidates the push token entirely. We hold no
 account and no content, so unpairing and deleting the app remove
 everything there ever was.</p>
 

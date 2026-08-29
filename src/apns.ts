@@ -34,6 +34,20 @@ export interface ApnsMessage {
   suite: string;
 }
 
+/**
+ * The quota digest (relay-protocol.md, "Delivery quota"): a fixed,
+ * passive push with no ciphertext, sent once per digest interval to a
+ * device past its monthly bound.  Distinguished from an alert by the
+ * absence of `ciphertext`.
+ */
+export interface ApnsDigest {
+  deviceToken: string;
+  topic: string;
+}
+
+/** The digest's own collapse id; every digest replaces the last. */
+export const DIGEST_COLLAPSE_ID = "digest";
+
 export interface ApnsResult {
   status: number;
   /** Apple's error reason (e.g. "BadDeviceToken"), when not a 200. */
@@ -106,7 +120,9 @@ export async function providerToken(
   const header = base64url(
     utf8(JSON.stringify({ alg: "ES256", kid: auth.keyId })),
   );
-  const claims = base64url(utf8(JSON.stringify({ iss: auth.teamId, iat: nowS })));
+  const claims = base64url(
+    utf8(JSON.stringify({ iss: auth.teamId, iat: nowS })),
+  );
   const signingInput = `${header}.${claims}`;
   const signature = await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" },
@@ -160,25 +176,45 @@ export function apnsPayload(msg: ApnsMessage): Record<string, unknown> {
   };
 }
 
+/**
+ * The digest notification.  No mutable-content: there is nothing to
+ * decrypt, so the app's NSE stays out of it and the system shows the
+ * text as is; `kind` lets the app route the tap.
+ */
+export function digestPayload(): Record<string, unknown> {
+  return {
+    aps: {
+      alert: {
+        title: "cronstable",
+        body: "Alerts are waiting. Open the app to see them.",
+      },
+      "interruption-level": "passive",
+    },
+    v: 1,
+    kind: "digest",
+  };
+}
+
 export async function sendToApns(
   host: string,
   auth: ApnsAuth,
-  msg: ApnsMessage,
+  msg: ApnsMessage | ApnsDigest,
   nowS: number = Math.floor(Date.now() / 1000),
 ): Promise<ApnsResult> {
   const jwt = await providerToken(auth, nowS);
+  const alert = "ciphertext" in msg ? msg : null;
   const response = await fetch(`${host}/3/device/${msg.deviceToken}`, {
     method: "POST",
     headers: {
       authorization: `bearer ${jwt}`,
       "apns-topic": msg.topic,
       "apns-push-type": "alert",
-      "apns-priority": msg.priority === "passive" ? "5" : "10",
-      "apns-collapse-id": msg.collapseId,
+      "apns-priority": alert && alert.priority !== "passive" ? "10" : "5",
+      "apns-collapse-id": alert ? alert.collapseId : DIGEST_COLLAPSE_ID,
       "apns-expiration": String(nowS + APNS_EXPIRATION_S),
       "content-type": "application/json",
     },
-    body: JSON.stringify(apnsPayload(msg)),
+    body: JSON.stringify(alert ? apnsPayload(alert) : digestPayload()),
   });
   const text = await response.text();
   if (response.status === 200) return { status: 200, reason: null };

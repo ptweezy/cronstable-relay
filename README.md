@@ -35,6 +35,14 @@ The relay is not a trusted party, by design:
 - **Logs:** outcome, priority, the first 8 hex chars of the device
   token's SHA-256, and a `collapseId` prefix. Device tokens and
   ciphertexts are never logged.
+- **Per-device state:** delivery counters keyed by the push token
+  (dedup and flap history per alert id, the rate bucket, the APNs
+  environment), this month's forward count, and for Pro devices the
+  verified entitlement's transaction id, product, expiry, environment,
+  and verification time. Per transaction, the SHA-256 of each device
+  token it lifts with a last-seen time. All of it expires on its own:
+  delivery state after a day of silence, quota with the month,
+  entitlement records with their expiry or 60 days of silence.
 
 The wire contract is
 [`docs/relay-protocol.md`](https://github.com/ptweezy/cronstable/blob/main/docs/relay-protocol.md)
@@ -52,6 +60,7 @@ is the relay's responsibility):
 | 202 | `{"v":1,"outcome":"forwarded"}` | Handed to APNs. |
 | 202 | `{"v":1,"outcome":"coalesced"}` | Duplicate of an alert forwarded moments ago (e.g. another cluster node's copy); accepted, not re-sent. |
 | 202 | `{"v":1,"outcome":"suppressed"}` | Flap suppression is holding this alert id; accepted, not sent. |
+| 202 | `{"v":1,"outcome":"digested"}` | The device is past its monthly free quota; accepted, and at most one digest push per hour goes out in place of the alerts. |
 | 400 | `{"v":1,"error":…}` | Malformed envelope (the error names the field). |
 | 410 | `{"v":1,"error":…,"reason":…}` | APNs permanently rejected the device token (`Unregistered`, `BadDeviceToken`, …); the pairing is dead. |
 | 413 | `{"v":1,"error":…}` | Body over 8 KB. |
@@ -80,10 +89,66 @@ this relay's, each overridable with a Worker var:
 | Cooling expires after silence | 2 h | `RELAY_FLAP_RESET_S` |
 | Per-device token bucket | burst 60, +1 token / 2 s | `RELAY_RATE_CAPACITY`, `RELAY_RATE_REFILL_PER_S` |
 
-Coalesced and suppressed posts still answer 2xx: the relay has taken
-responsibility, and delivering nothing *is* the policy. Only the rate
-limiter says 429. A forward that fails at APNs is rolled back, so the
-same alert stays eligible the moment APNs recovers.
+Coalesced, suppressed, and digested posts still answer 2xx: the relay
+has taken responsibility, and delivering nothing *is* the policy. Only
+the rate limiter says 429. The relay rolls back a forward that fails at APNs,
+so the same alert stays eligible the moment APNs recovers, and the
+failed send costs no quota.
+
+## Monthly quota and Cronstable Pro
+
+Each device gets `RELAY_FREE_MONTHLY_FORWARDS` (500) forwards per UTC
+calendar month. Only alerts that reach APNs count: coalesced,
+suppressed, rate-limited, and failed envelopes do not, and neither do
+digests. Past the bound the relay answers `digested` and sends the
+device one fixed digest push (passive, collapse id `digest`, no
+ciphertext, `"kind": "digest"` in the payload) at most once per
+`RELAY_DIGEST_INTERVAL_S` (3600) while alerts keep arriving.
+
+A Cronstable Pro entitlement lifts the bound. The app proves it with
+`POST /entitlement` carrying the App Store's own signed transaction
+(a StoreKit 2 `jwsRepresentation`), which the relay verifies offline in
+`src/appstore.ts`: the `x5c` chain against the pinned Apple Root CA G3
+(by exact DER bytes), each certificate's validity window and signature,
+Apple's in-app purchase marker extension on the leaf, then the ES256
+signature and the claims (`bundleId` = `APNS_TOPIC`, `productId` in
+`RELAY_PRO_PRODUCT_IDS`, no `revocationDate`, `expiresDate` in the
+future, and `environment` Production, or Sandbox unless
+`RELAY_ACCEPT_SANDBOX_ENTITLEMENTS` is `false`). Without a `jws` the
+route only reports the device's plan and quota. One transaction lifts at
+most `RELAY_PRO_DEVICES_PER_TRANSACTION` (5) devices; a device's slot
+lapses after `RELAY_PRO_DEVICE_SLOT_TTL_S` (60 days) without a re-post.
+The relay keeps the transaction id, product, expiry, environment, and
+verification time per device, and a hash of each device token per
+transaction, and never stores the JWS.
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 200 | `{"v":1,"plan":…,"expiresAt":…,"environment":…,"quota":{"used":…,"limit":…,"resetsAt":…}}` | The device's plan and this month's quota; `expiresAt`/`environment` only on `pro`, `limit` null when unlimited. |
+| 400 | `{"v":1,"error":…}` | Malformed body, device, or JWS. |
+| 401 | `{"v":1,"error":"entitlement rejected","reason":…}` | The transaction does not verify; `reason` names the failed check. |
+| 409 | `{"v":1,"error":…,"limit":5}` | The transaction already lifts its maximum number of devices. |
+| 413 | `{"v":1,"error":…}` | Body over 16 KB. |
+
+## Environment
+
+Every knob has a default in code; `wrangler.jsonc` sets only the ones
+worth seeing at a glance.
+
+| Var | Default | Meaning |
+| --- | --- | --- |
+| `APNS_TOPIC` | `com.cronstable.app` | Bundle id the notifications and entitlements belong to. |
+| `APNS_ENVIRONMENT` | `auto` | See "APNs environments". |
+| `RELAY_FREE_MONTHLY_FORWARDS` | `500` | Free forwards per device per UTC month. |
+| `RELAY_DIGEST_INTERVAL_S` | `3600` | Minimum seconds between digest pushes to one device. |
+| `RELAY_PRO_PRODUCT_IDS` | `com.cronstable.app.pro.monthly,com.cronstable.app.pro.yearly` | Product ids that count as Pro. |
+| `RELAY_ACCEPT_SANDBOX_ENTITLEMENTS` | `true` | `false` refuses Sandbox (TestFlight, Xcode) transactions. |
+| `RELAY_PRO_DEVICES_PER_TRANSACTION` | `5` | Devices one transaction may lift. |
+| `RELAY_PRO_DEVICE_SLOT_TTL_S` | `5184000` | Seconds of silence after which a device's slot lapses. |
+| `RELAY_APPLE_ROOT_CERT` | Apple Root CA G3 | Test hook: base64 DER of the root to trust instead. |
+| `RELAY_QUOTA_PERIOD_S` | unset | Test hook: fixed-length quota periods instead of calendar months. |
+
+See "Delivery policy" for the delivery-policy windows.
 
 ## APNs environments
 
@@ -189,6 +254,11 @@ pick it up after one `npm run types`. Rerun it after changing
 
 `.dev.vars` (gitignored) can hold the `APNS_*` secrets for `wrangler
 dev` against real sandbox APNs.
+
+The entitlement suite signs with a test-only certificate chain in
+`tests/fixtures/appstore/` (leaf private keys included; none of it is
+registered with Apple). `sh scripts/gen-appstore-fixtures.sh`
+regenerates it with OpenSSL 3.
 
 ## License
 
