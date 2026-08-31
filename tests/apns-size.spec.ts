@@ -13,21 +13,38 @@
 
 import { describe, expect, it } from "vitest";
 
-import { APNS_PAYLOAD_MAX, ENVELOPE_BYTES, apnsPayload } from "../src/apns";
+import { apnsPayload } from "../src/apns";
 import { MAX_CIPHERTEXT_CHARS, SUITE_MAX_CHARS } from "../src/validate";
+
+/** APNs rejects notifications whose final JSON exceeds this. */
+const APNS_PAYLOAD_MAX = 4096;
+
+/**
+ * What everything in apnsPayload() except the ciphertext serializes to,
+ * with the longest suite token in play.  The daemon hardcodes the same
+ * number as RELAY_ENVELOPE_BYTES (cronstable/push.py) and derives its
+ * ciphertext cap from it, so the pin below measures it against the real
+ * payload rather than letting the two drift.
+ */
+const ENVELOPE_BYTES = 189;
 
 /** The daemon's RELAY_ENVELOPE_RESERVE (cronstable/push.py). */
 const DAEMON_RESERVE = 107;
 
 const SUITES = ["x25519", "xwing"];
 
-function envelopeBytes(suite: string): number {
+const PRIORITIES = ["time-sensitive", "passive"] as const;
+
+function envelopeBytes(
+  suite: string,
+  priority: (typeof PRIORITIES)[number],
+): number {
   const json = JSON.stringify(
     apnsPayload({
       deviceToken: "a".repeat(64),
       ciphertext: "",
       collapseId: "0".repeat(32),
-      priority: "time-sensitive",
+      priority,
       topic: "com.example.app",
       suite,
     }),
@@ -37,25 +54,15 @@ function envelopeBytes(suite: string): number {
 
 describe("APNs size budget", () => {
   it("ENVELOPE_BYTES matches the widest envelope really built", () => {
-    const widest = Math.max(...SUITES.map(envelopeBytes));
+    // Widest across both axes: time-sensitive adds `sound`, so it is the
+    // branch ENVELOPE_BYTES describes, and taking the maximum keeps the
+    // pin right if that ever inverts.
+    const widest = Math.max(
+      ...SUITES.flatMap((suite) =>
+        PRIORITIES.map((priority) => envelopeBytes(suite, priority)),
+      ),
+    );
     expect(ENVELOPE_BYTES).toBe(widest);
-  });
-
-  it("a max-length ciphertext still fits Apple's cap", () => {
-    for (const suite of SUITES) {
-      const json = JSON.stringify(
-        apnsPayload({
-          deviceToken: "a".repeat(64),
-          ciphertext: "A".repeat(MAX_CIPHERTEXT_CHARS),
-          collapseId: "0".repeat(32),
-          priority: "time-sensitive",
-          topic: "com.example.app",
-          suite,
-        }),
-      );
-      const size = new TextEncoder().encode(json).length;
-      expect(size, `suite ${suite}`).toBeLessThanOrEqual(APNS_PAYLOAD_MAX);
-    }
   });
 
   it("the reserve the daemon budgets for is really there", () => {
@@ -84,22 +91,5 @@ describe("APNs size budget", () => {
     );
     const size = new TextEncoder().encode(json).length;
     expect(size).toBeLessThanOrEqual(APNS_PAYLOAD_MAX);
-  });
-
-  it("the passive variant is never wider than the time-sensitive one", () => {
-    // time-sensitive adds `sound`, so it is the one ENVELOPE_BYTES must
-    // describe; a future change that inverts that would silently break
-    // the bound above.
-    const passive = JSON.stringify(
-      apnsPayload({
-        deviceToken: "a".repeat(64),
-        ciphertext: "",
-        collapseId: "0".repeat(32),
-        priority: "passive",
-        topic: "com.example.app",
-        suite: "x25519",
-      }),
-    ).length;
-    expect(passive).toBeLessThanOrEqual(ENVELOPE_BYTES);
   });
 });

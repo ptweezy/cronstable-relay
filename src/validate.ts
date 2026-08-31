@@ -25,29 +25,11 @@ export const MAX_BODY_BYTES = 8192;
 export const MAX_CIPHERTEXT_CHARS = 3800;
 
 /**
- * The smallest ciphertext each suite could possibly produce, in base64
- * chars: the sealing overhead plus at least `{}`, rounded up to a base64
- * quantum.  Cheap garbage rejection, not cryptographic checking.
- *
- * x25519: 32-byte ephemeral public key + 16-byte MAC + 2 = 50 B → 68.
- * xwing:  1120-byte ciphertext + 16-byte tag + 2 = 1138 B → 1520.
+ * A sealed box is a 32-byte ephemeral public key plus a 16-byte MAC
+ * around at least `{}`; anything shorter cannot be one (50 bytes → 68
+ * base64 chars).  Cheap garbage rejection, not cryptographic checking.
  */
-const MIN_CIPHERTEXT_CHARS: Record<string, number> = {
-  x25519: 68,
-  xwing: 1520,
-};
-
-/**
- * The floor for a suite this relay has never heard of.  Such an envelope
- * is still forwarded: the ciphertext is sealed to the device either way,
- * and relay-protocol.md requires relays to treat `suite` as opaque
- * routing metadata rather than a thing to gate on.  Recognizing a suite
- * only buys the tighter minimum above, so an unknown one gets the
- * loosest floor and nothing more.
- */
-const MIN_UNKNOWN_SUITE_CHARS = Math.min(
-  ...Object.values(MIN_CIPHERTEXT_CHARS),
-);
+const MIN_CIPHERTEXT_CHARS = 68;
 
 /** relay-protocol.md: an absent suite means x25519. */
 const DEFAULT_SUITE = "x25519";
@@ -115,11 +97,10 @@ export function parseEnvelope(raw: unknown): ParseResult {
       error: `ciphertext exceeds ${MAX_CIPHERTEXT_CHARS} characters`,
     };
   }
-  const floor = MIN_CIPHERTEXT_CHARS[suite] ?? MIN_UNKNOWN_SUITE_CHARS;
   if (
     ciphertext.length % 4 !== 0 ||
     !BASE64_RE.test(ciphertext) ||
-    ciphertext.length < floor
+    ciphertext.length < MIN_CIPHERTEXT_CHARS
   ) {
     return { error: "ciphertext is not a base64 sealed box" };
   }

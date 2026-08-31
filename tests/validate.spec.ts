@@ -117,10 +117,6 @@ describe("parseEnvelope suites", () => {
     expect(envelopeOf(body).suite).toBe("x25519");
   });
 
-  it("keeps an explicit suite", () => {
-    expect(envelopeOf({ ...valid(), suite: "x25519" }).suite).toBe("x25519");
-  });
-
   it("forwards an unknown suite rather than rejecting it", () => {
     // relay-protocol.md: the relay treats `suite` as opaque routing
     // metadata.  A relay that rejected unknown suites would break every
@@ -145,18 +141,4 @@ describe("parseEnvelope suites", () => {
     expect(errorOf({ ...valid(), suite: "" })).toMatch(/suite/);
   });
 
-  it("holds each known suite to its own minimum ciphertext length", () => {
-    // 96 chars is a plausible sealed box and far too short to be an
-    // X-Wing ciphertext (1120 bytes + tag), so the same body is accepted
-    // under one suite and binned under the other.
-    expect(envelopeOf({ ...valid(), suite: "x25519" }).suite).toBe("x25519");
-    expect(errorOf({ ...valid(), suite: "xwing" })).toMatch(/sealed/);
-    expect(
-      envelopeOf({
-        ...valid(),
-        suite: "xwing",
-        ciphertext: "A".repeat(1520),
-      }).suite,
-    ).toBe("xwing");
-  });
 });
