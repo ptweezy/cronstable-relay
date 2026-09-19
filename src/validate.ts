@@ -16,6 +16,15 @@ import type { Envelope } from "./types";
 export const MAX_BODY_BYTES = 8192;
 
 /**
+ * POST /entitlement bodies carry a JWS with a three-certificate chain,
+ * which is larger than an envelope but still well under this.  Lives
+ * here rather than in the entry module because the Workers runtime
+ * accepts only handlers and Durable Object classes as exports of the
+ * entry module; a bare constant there fails `wrangler dev` at startup.
+ */
+export const MAX_ENTITLEMENT_BODY_BYTES = 16384;
+
+/**
  * relay-protocol.md, "Size budget": 4096 (the APNs cap) minus the 189
  * bytes this relay's own APNs envelope serializes to, minus a 107-byte
  * reserve for protocol fields added later.  tests/apns-size.spec.ts

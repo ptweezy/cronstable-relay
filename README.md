@@ -8,6 +8,7 @@ their alert traffic passes through.
 
 ```
 daemon ──sealed box──▶ this relay ──APNs──▶ device (NSE decrypts locally)
+app ──sealed request──▶ this relay ──WebSocket──▶ daemon (Reach, sealed reply back)
 ```
 
 A cronstable daemon seals every alert to each paired device's public
@@ -35,6 +36,14 @@ The relay is not a trusted party, by design:
 - **Logs:** outcome, priority, the first 8 hex chars of the device
   token's SHA-256, and a `collapseId` prefix. Device tokens and
   ciphertexts are never logged.
+- **Reach (remote access):** a daemon's tunnel id (its public signing
+  key), the daemon's IP address, connection times, node name, and agent
+  string; the app's IP address and the SHA-256 of its credential; and
+  the timing and sizes of relayed requests and replies. Every request
+  and reply is sealed between the app and the daemon, so the relay
+  never sees a URL path, a header, a job name, or a log line. Logs
+  record a hash prefix of the tunnel id, a status, byte counts, and
+  latency. See "Reach: remote access through the relay".
 - **Per-device state:** delivery counters keyed by the push token
   (dedup and flap history per alert id, the rate bucket, the APNs
   environment), this month's forward count, and for Pro devices the
@@ -130,6 +139,126 @@ transaction, and never stores the JWS.
 | 409 | `{"v":1,"error":…,"limit":5}` | The transaction already lifts its maximum number of devices. |
 | 413 | `{"v":1,"error":…}` | Body over 16 KB. |
 
+## Reach: remote access through the relay
+
+Reach lets the app reach a daemon that has no address the phone can
+dial, such as a machine behind NAT or a cloud box with a closed
+firewall. The daemon dials out and holds one WebSocket open at
+`/v1/tunnel/{id}`, the app posts each request to `/v1/reach/{id}`, and
+a Durable Object per tunnel (`src/tunnel.ts`) matches the two and
+copies bytes between them. The wire contract is
+[`docs/reach-protocol.md`](https://github.com/ptweezy/cronstable/blob/main/docs/reach-protocol.md)
+in the cronstable repo; the daemon, this relay, and the app implement
+it.
+
+The tunnel id is the daemon's Ed25519 public key, so the relay verifies
+possession with a signed challenge and stores no key material. Every
+request and every reply is sealed between the app and the daemon with
+keys the relay never holds. The relay admits a request when the SHA-256
+of its credential is in the set the daemon published, forwards the
+sealed body to the daemon as one frame, and streams the daemon's sealed
+reply frames back as the response body. It never parses the inside of a
+frame.
+
+### Routes
+
+`GET /v1/tunnel/{id}` is the daemon's WebSocket upgrade, with the
+subprotocol `cronstable-reach-v1`. `POST /v1/reach/{id}` carries one
+sealed request with `Authorization: Reach <credential>`,
+`Content-Type: application/octet-stream`, and a `Content-Length` of at
+most 1,052,672 bytes. `GET /v1/reach/{id}` with the same header reports
+presence. The id is 43 base64url characters; anything else is a `400`
+before any tunnel object is touched.
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 200 | `application/octet-stream`, `Cache-Control: no-store`, streamed | The sealed reply. The relay answers the moment the daemon's first frame arrives. |
+| 200 | `{"v":1,"online":…,"lastSeenAt":…,"node":…}` | `GET`: presence, for an admitted credential only, so the id alone is never a presence oracle. |
+| 400 | `{"v":1,"error":…}` | Malformed id, missing or malformed `Authorization`, wrong content type, or an upgrade without the subprotocol. |
+| 403 | `{"v":1,"error":"reach token not admitted"}` | The credential is outside the daemon's admit set: the token was rotated or removed. |
+| 404 | `{"v":1,"error":"unknown tunnel"}` | No daemon has connected under that id, or `RELAY_REACH_ENABLED` is `false`. The relay writes nothing for an unknown id. |
+| 409 | `{"v":1,"error":"key mismatch"}` or `{"v":1,"error":"replay"}` | The daemon rejected the request (`REJECT 1` or `REJECT 2`). |
+| 411 | `{"v":1,"error":…}` | A `POST` without `Content-Length`. |
+| 413 | `{"v":1,"error":…}` | The body is over the cap, refused before any daemon traffic, or the daemon rejected it as too large. |
+| 429 | `{"v":1,"error":…}` + `Retry-After` | A limit in the table below, or the daemon is busy (`REJECT 3`). |
+| 502 | `{"v":1,"error":"daemon aborted"}` | The daemon socket dropped mid-request, the request went stale, or the daemon failed internally (`REJECT 5`). |
+| 503 | `{"v":1,"error":"daemon offline","lastSeenAt":…}` + `Retry-After: 5` | The daemon socket is absent. |
+| 504 | `{"v":1,"error":"no response"}` | No first frame within the first-byte wait. |
+
+A reply the relay cuts short (a stream past its lifetime or the day's
+allowance, or a slot lost to the concurrent-stream cap) ends the body
+without the protocol's final END record, which the app treats as a
+transport error and reattaches from. A reply whose daemon drops or goes
+silent after its first frame fails the body outright.
+
+### Limits
+
+Every limit applies per tunnel, defaults to the protocol document's
+value, and takes a Worker var (seconds may be fractional).
+
+| Limit | Default | Var |
+| --- | --- | --- |
+| Hello timeout: an unverified socket closes with `4408` | 15 s | `RELAY_REACH_HELLO_TIMEOUT_S` |
+| Requests in flight | 32 | `RELAY_REACH_MAX_INFLIGHT` |
+| Stream threshold: a request open longer than this is a stream | 15 s | `RELAY_REACH_STREAM_THRESHOLD_S` |
+| Concurrent streams | 4 | `RELAY_REACH_MAX_STREAMS` |
+| Stream lifetime, then `CANCEL 2` | 30 min | `RELAY_REACH_MAX_STREAM_S` |
+| Open-stream time per UTC day | 3 h | `RELAY_REACH_DAILY_STREAM_S` |
+| Requests per admit id | burst 120, +2 per s | `RELAY_REACH_ADMIT_BURST`, `RELAY_REACH_ADMIT_REFILL_PER_S` |
+| Frames per daemon socket | 30 per s, burst 200 | `RELAY_REACH_FRAME_RATE_PER_S`, `RELAY_REACH_FRAME_BURST` |
+| Unadmitted credentials per minute, then `429` for the caller | 30 | `RELAY_REACH_STRIKES_PER_MIN` |
+| First-byte wait, then `504` | 8 s | `RELAY_REACH_FIRST_BYTE_S` |
+| Stale request: no daemon frame for this long fails it | 120 s | `RELAY_REACH_STALE_S` |
+| Frame payload | 1,114,112 bytes | `RELAY_REACH_MAX_FRAME_PAYLOAD` |
+| Inner request body, advertised to the daemon; the `POST` cap is this plus 4,096 | 1 MiB | `RELAY_REACH_MAX_BODY` |
+| Largest reply chunk, advertised to the daemon | 64 KiB | `RELAY_REACH_MAX_CHUNK` |
+| Initial flow-control window | 256 KiB | `RELAY_REACH_INITIAL_WINDOW` |
+
+The oldest streams keep their slots: when a request crosses the
+threshold while every slot is taken, the relay cuts it with `CANCEL 2`.
+The day's usage counts the full duration of every request that lasted
+past the threshold. Once the allowance is spent, the relay cuts the
+open streams and answers new requests with `429` and a `Retry-After`
+that reaches 00:00 UTC. A daemon socket that overruns its frame rate by
+more than one extra burst closes with `4400`. Unadmitted credentials
+count against the tunnel's strikes, never against the daemon socket,
+and an admitted credential keeps working while the relay refuses
+strangers.
+
+### Flow control
+
+Every request starts with the initial window of credit. The daemon never has more reply bytes in flight for a request
+than its remaining credit, and the relay grants more with `WINDOW`
+frames as the app drains the response body: whenever the outstanding
+credit has fallen to half the window or less and the body's queue has
+room (a 64 KiB high-water mark), the relay tops the credit back up to a
+full window. A slow cellular link therefore cannot grow the relay's
+buffers, and a long log replay waits for the phone rather than for the
+relay's memory. A daemon that sends past its credit loses the socket
+with `4400`.
+
+### Daemon sockets and deploys
+
+The daemon socket is a hibernatable WebSocket: an idle tunnel object leaves memory between frames and wakes
+on the next one, with its state in the socket's attachment and in
+storage. Every deploy of the relay drops every daemon socket; each
+daemon reconnects on its own with jittered backoff, so a deploy costs
+each tunnel a few seconds of `503`. The hosted relay runs on Workers
+Paid: Durable Object requests, which include every relayed request and
+every daemon frame, count against the same daily request allowance the
+push path uses, and on the Free plan a busy tunnel would exhaust that
+allowance and take push down with it. A tunnel record (node name,
+credential hashes, last-seen time) expires after 60 days without its
+daemon.
+
+### Logs
+
+Reach log lines record the first 8 hex characters of SHA-256 over the
+tunnel id, a status, byte counts, and latency. The tunnel id
+itself and the credential never appear, and the Worker's invocation
+logs, which would retain request URLs, are off
+(`observability.logs.invocation_logs` in `wrangler.jsonc`).
+
 ## Environment
 
 Every knob has a default in code; `wrangler.jsonc` sets only the ones
@@ -147,8 +276,11 @@ worth seeing at a glance.
 | `RELAY_PRO_DEVICE_SLOT_TTL_S` | `5184000` | Seconds of silence after which a device's slot lapses. |
 | `RELAY_APPLE_ROOT_CERT` | Apple Root CA G3 | Test hook: base64 DER of the root to trust instead. |
 | `RELAY_QUOTA_PERIOD_S` | unset | Test hook: fixed-length quota periods instead of calendar months. |
+| `RELAY_REACH_ENABLED` | `true` | The Reach kill switch: `false` answers `404` on every `/v1/*` route while push keeps running. |
+| `RELAY_REACH_*` | the protocol's limits | See "Reach: remote access through the relay". |
 
-See "Delivery policy" for the delivery-policy windows.
+See "Delivery policy" for the delivery-policy windows and "Reach" for
+the Reach limits.
 
 ## APNs environments
 
@@ -183,9 +315,10 @@ in the core repository.
 
 ### Deploy
 
-Prerequisites: a Cloudflare account (the free plan is enough; the
-Durable Objects here are SQLite-backed), Node 22+ (CI builds on the 24
-LTS), and an Apple Developer account for the APNs key.
+Prerequisites: a Cloudflare account (the Free plan serves push; a relay
+that also carries Reach traffic belongs on Workers Paid, see "Reach"),
+Node 22+ (CI builds on the 24 LTS), and an Apple Developer account for
+the APNs key.
 
 1. Create the APNs auth key: developer.apple.com → Certificates,
    Identifiers & Profiles → Keys → add a key with the **Apple Push
@@ -225,6 +358,21 @@ LTS), and an Apple Developer account for the APNs key.
        url: https://relay.cronstable.com/   # or your deployment
    ```
 
+   A daemon with a `web.reach` section dials the same origin for its
+   tunnel socket unless `web.reach.relay` names another.
+
+9. Rate-limit the Reach routes per address. In the zone's Security
+   settings, add a rate limiting rule for requests whose URI path starts
+   with `/v1/`, keyed by IP address (for example 300 requests per 10
+   seconds, then block for 10 seconds). The relay's own limits are per
+   tunnel and per credential; this rule bounds what one address can send
+   at every Reach route before a tunnel object sees it.
+10. Exempt the tunnel upgrade from challenges. Add a WAF custom rule for
+    requests whose URI path starts with `/v1/tunnel/` that skips the
+    managed rulesets and bot management. A challenge cannot be solved on
+    a WebSocket upgrade request; a daemon that gets a `403` or `503`
+    carrying `cf-mitigated` parks with hourly retries.
+
 ### Smoke test
 
 `npm run smoke -- https://relay.cronstable.com/` POSTs a well-formed
@@ -255,10 +403,23 @@ pick it up after one `npm run types`. Rerun it after changing
 `.dev.vars` (gitignored) can hold the `APNS_*` secrets for `wrangler
 dev` against real sandbox APNs.
 
+To dial a local relay from a daemon, start it as
+`npx wrangler dev --port 8787 --host 127.0.0.1:8787`. `wrangler dev`
+rewrites every request URL to the configured route (`relay.cronstable.com`),
+so without `--host` the tunnel challenge names that host, and a daemon
+that dialed `http://127.0.0.1:8787` refuses it, as the protocol requires.
+
 The entitlement suite signs with a test-only certificate chain in
 `tests/fixtures/appstore/` (leaf private keys included; none of it is
 registered with Apple). `sh scripts/gen-appstore-fixtures.sh`
 regenerates it with OpenSSL 3.
+
+The Reach suites check the codec, the challenge signature, and the
+admission credentials against `tests/fixtures/reach-vectors.json`, a
+verbatim copy of `tests/fixtures/reach/vectors.json` in the cronstable
+repo (`python -m tests.reach_vectors` there regenerates it). Copy the
+file over again when that one changes. `tests/tunnel.spec.ts` runs in
+its own vitest project with the Reach timers shrunk to seconds.
 
 ## License
 

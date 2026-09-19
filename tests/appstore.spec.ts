@@ -15,7 +15,7 @@ import {
   verifyTransaction,
   type VerifyOptions,
 } from "../src/appstore";
-import { MAX_ENTITLEMENT_BODY_BYTES } from "../src/index";
+import { MAX_ENTITLEMENT_BODY_BYTES } from "../src/validate";
 
 import {
   expectNoPendingApns,

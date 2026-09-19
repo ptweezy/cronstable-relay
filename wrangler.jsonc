@@ -3,6 +3,10 @@
   "name": "cronstable-relay",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-22",
+  // enable_request_signal: request.signal fires when the caller of a
+  // Reach request disconnects, so the tunnel object can CANCEL it at
+  // the daemon instead of streaming to nobody.
+  "compatibility_flags": ["enable_request_signal"],
 
   // https://relay.cronstable.com/ is the relay's only address: the
   // hostname daemons put in push.relay.url, and the one an operator can
@@ -13,20 +17,26 @@
   "preview_urls": false,
   "routes": [{ "pattern": "relay.cronstable.com", "custom_domain": true }],
 
-  "observability": { "enabled": true },
+  // Invocation logs would retain every request URL, and Reach URLs
+  // carry tunnel ids; the routes write their own lines with a hashed id.
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } },
 
   // DEVICE: one object per push token (delivery policy, quota, the
   // verified entitlement).  ENTITLEMENT: one per App Store transaction
   // (the hashes of the devices it lifts, for the per-transaction cap).
+  // TUNNEL: one per Reach tunnel (the daemon's WebSocket, the admit
+  // set, the requests in flight).
   "durable_objects": {
     "bindings": [
       { "name": "DEVICE", "class_name": "DeviceState" },
-      { "name": "ENTITLEMENT", "class_name": "EntitlementState" }
+      { "name": "ENTITLEMENT", "class_name": "EntitlementState" },
+      { "name": "TUNNEL", "class_name": "TunnelState" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["DeviceState"] },
-    { "tag": "v2", "new_sqlite_classes": ["EntitlementState"] }
+    { "tag": "v2", "new_sqlite_classes": ["EntitlementState"] },
+    { "tag": "v3", "new_sqlite_classes": ["TunnelState"] }
   ],
 
   // Non-secret configuration.  The Apple credentials are secrets:
@@ -38,14 +48,18 @@
   // so only the ones worth seeing at a glance are set here:
   //   RELAY_ACCEPT_SANDBOX_ENTITLEMENTS  "true" accepts Sandbox (TestFlight,
   //     Xcode) StoreKit transactions as Pro proof; "false" refuses them.
+  //   RELAY_REACH_ENABLED  the Reach kill switch: "false" answers 404 on
+  //     every /v1/* route (daemons park, apps fall back to direct access)
+  //     while push keeps running.
   // Also available: RELAY_FREE_MONTHLY_FORWARDS (500),
   // RELAY_DIGEST_INTERVAL_S (3600), RELAY_PRO_PRODUCT_IDS (the two
   // com.cronstable.app.pro.* ids), RELAY_PRO_DEVICES_PER_TRANSACTION (5),
-  // RELAY_PRO_DEVICE_SLOT_TTL_S (5184000), and the delivery-policy
-  // windows listed in the README.
+  // RELAY_PRO_DEVICE_SLOT_TTL_S (5184000), the delivery-policy windows
+  // listed in the README, and the RELAY_REACH_* limits (README, "Reach").
   "vars": {
     "APNS_TOPIC": "com.cronstable.app",
     "APNS_ENVIRONMENT": "auto",
-    "RELAY_ACCEPT_SANDBOX_ENTITLEMENTS": "true"
+    "RELAY_ACCEPT_SANDBOX_ENTITLEMENTS": "true",
+    "RELAY_REACH_ENABLED": "true"
   }
 }

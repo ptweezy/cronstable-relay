@@ -7,12 +7,13 @@ import { defineConfig } from "vitest/config";
 // enough to cross with sub-second sleeps, and a real (test-only) ES256
 // key so the JWT path runs for real; only APNs itself is mocked.
 //
-// Two projects share one worker: "relay" runs every suite with the
+// Three projects share one worker: "relay" runs every suite with the
 // monthly quota at its default (500 forwards, far above what any test
-// sends), and "quota" runs tests/quota-relay.spec.ts alone with the
-// quota shrunk to two forwards, a two-second digest interval and
-// six-second periods, so the digest and rollover paths are crossed
-// with sleeps.
+// sends), "quota" runs tests/quota-relay.spec.ts alone with the quota
+// shrunk to two forwards, a two-second digest interval and six-second
+// periods, so the digest and rollover paths are crossed with sleeps,
+// and "reach" runs tests/tunnel.spec.ts alone with the Reach timers
+// and caps shrunk to seconds and single digits for the same reason.
 
 const fixture = (name: string, encoding: "utf8" | "base64" = "utf8") =>
   readFileSync(new URL(`./tests/fixtures/${name}`, import.meta.url)).toString(
@@ -48,9 +49,14 @@ const bindings = {
   TEST_APPSTORE_LEAF_EXPIRED: fixture("appstore/leaf-expired.der", "base64"),
   TEST_APPSTORE_LEAF_EXPIRED_KEY: fixture("appstore/leaf-expired.key.pem"),
   TEST_APPSTORE_OTHER_ROOT: fixture("appstore/other-root.der", "base64"),
+
+  // The cronstable repo's byte-exact Reach vectors
+  // (tests/fixtures/reach/vectors.json there), copied verbatim.
+  TEST_REACH_VECTORS: fixture("reach-vectors.json"),
 };
 
 const QUOTA_SPEC = "tests/quota-relay.spec.ts";
+const REACH_SPEC = "tests/tunnel.spec.ts";
 
 function project(
   name: string,
@@ -72,7 +78,7 @@ function project(
 export default defineConfig({
   test: {
     projects: [
-      project("relay", {}, ["tests/**/*.spec.ts"], [QUOTA_SPEC]),
+      project("relay", {}, ["tests/**/*.spec.ts"], [QUOTA_SPEC, REACH_SPEC]),
       project(
         "quota",
         {
@@ -81,6 +87,23 @@ export default defineConfig({
           RELAY_QUOTA_PERIOD_S: "6",
         },
         [QUOTA_SPEC],
+      ),
+      project(
+        "reach",
+        {
+          RELAY_REACH_HELLO_TIMEOUT_S: "1",
+          RELAY_REACH_FIRST_BYTE_S: "1",
+          RELAY_REACH_STALE_S: "2",
+          RELAY_REACH_STREAM_THRESHOLD_S: "1",
+          RELAY_REACH_MAX_STREAM_S: "2",
+          RELAY_REACH_DAILY_STREAM_S: "3.5",
+          RELAY_REACH_MAX_INFLIGHT: "4",
+          RELAY_REACH_MAX_STREAMS: "2",
+          RELAY_REACH_ADMIT_BURST: "6",
+          RELAY_REACH_ADMIT_REFILL_PER_S: "1",
+          RELAY_REACH_STRIKES_PER_MIN: "5",
+        },
+        [REACH_SPEC],
       ),
     ],
   },

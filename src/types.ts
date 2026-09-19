@@ -59,6 +59,10 @@ export interface Env {
   ENTITLEMENT: DurableObjectNamespace<
     import("./entitlement").EntitlementState & Rpc.DurableObjectBranded
   >;
+  /** One object per Reach tunnel (docs/reach-protocol.md; see tunnel.ts). */
+  TUNNEL: DurableObjectNamespace<
+    import("./tunnel").TunnelState & Rpc.DurableObjectBranded
+  >;
 
   /** Apple push credentials; all set via `wrangler secret put`. */
   APNS_TEAM_ID?: string;
@@ -97,4 +101,28 @@ export interface Env {
   RELAY_APPLE_ROOT_CERT?: string;
   RELAY_PRO_DEVICES_PER_TRANSACTION?: string;
   RELAY_PRO_DEVICE_SLOT_TTL_S?: string;
+
+  /**
+   * Reach (see reach.ts).  RELAY_REACH_ENABLED "false" turns every
+   * /v1/* route into a 404 while push keeps running; the rest tune the
+   * limits table, seconds as strings, with the protocol defaults in code.
+   */
+  RELAY_REACH_ENABLED?: string;
+  RELAY_REACH_HELLO_TIMEOUT_S?: string;
+  RELAY_REACH_MAX_BODY?: string;
+  RELAY_REACH_MAX_CHUNK?: string;
+  RELAY_REACH_MAX_STREAM_S?: string;
+  RELAY_REACH_MAX_INFLIGHT?: string;
+  RELAY_REACH_INITIAL_WINDOW?: string;
+  RELAY_REACH_MAX_STREAMS?: string;
+  RELAY_REACH_STREAM_THRESHOLD_S?: string;
+  RELAY_REACH_DAILY_STREAM_S?: string;
+  RELAY_REACH_ADMIT_BURST?: string;
+  RELAY_REACH_ADMIT_REFILL_PER_S?: string;
+  RELAY_REACH_FRAME_RATE_PER_S?: string;
+  RELAY_REACH_FRAME_BURST?: string;
+  RELAY_REACH_STRIKES_PER_MIN?: string;
+  RELAY_REACH_FIRST_BYTE_S?: string;
+  RELAY_REACH_STALE_S?: string;
+  RELAY_REACH_MAX_FRAME_PAYLOAD?: string;
 }

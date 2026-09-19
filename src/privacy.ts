@@ -8,7 +8,7 @@
  * Self-contained HTML: no scripts, no external assets, theme-aware.
  */
 
-const EFFECTIVE = "August 28, 2026";
+const EFFECTIVE = "September 17, 2026";
 
 export const PRIVACY_HTML = `<!doctype html>
 <html lang="en">
@@ -91,6 +91,27 @@ hearing from the device.</p>
 <p>Apple receives the encrypted payload and your push token to deliver
 notifications; Apple's own privacy terms govern that delivery.</p>
 
+<h2>Remote access through the relay</h2>
+<p>If you turn on remote access (Reach) on your server, the server keeps
+one connection open to our relay, and the app sends its requests through
+the relay when it cannot reach the server directly. Each request and
+each reply is encrypted between the app and your server with keys the
+relay never holds, so the relay cannot read what you ask for or what
+comes back. It never sees a URL, a header, a job name, or a log
+line.</p>
+<p>To route those requests the relay processes your server's tunnel
+identifier (a public key), its IP address, connection times, node name,
+and version string, and cryptographic hashes of the credentials it
+allows. From your phone it processes the IP address, the hash of the
+credential the app presents, and the timing and sizes of requests and
+replies. The relay keeps, per tunnel, the node name, the credential
+hashes, when the server was last connected, and the day's total
+streaming time, which expires with the day. A tunnel record expires 60
+days after the server was last connected. Service logs record a
+truncated hash of the tunnel identifier, a status, byte counts, and
+latency, and never the identifier or a credential. Turning remote access
+off on the server, or rotating its identity, ends the connection.</p>
+
 <h2>The demo</h2>
 <p>The optional "Try the demo" mode connects the app read-only to a
 sample fleet at demo.cronstable.com. Like any web server, it sees
@@ -114,11 +135,12 @@ logs are short-lived.</p>
 <p>Unpair a device from your server (in the app, or with
 <code>cronstable push unpair</code> on the server) and alerts stop
 immediately. Relay delivery state is transient and expires on its own:
-counters within a day of silence, the monthly count with the month, and
-entitlement records with their expiry or after 60 days of silence.
-Deleting the app invalidates the push token entirely. We hold no
-account and no content, so unpairing and deleting the app remove
-everything there ever was.</p>
+counters within a day of silence, the monthly count with the month,
+entitlement records with their expiry or after 60 days of silence, and
+remote-access tunnel records 60 days after the server was last
+connected. Deleting the app invalidates the push token entirely. We
+hold no account and no content, so unpairing and deleting the app
+remove everything there ever was.</p>
 
 <h2>Children</h2>
 <p>Cronstable is a server-administration tool; its audience is people

@@ -7,20 +7,38 @@
  * still-sealed ciphertext to APNs.  The relay never sees plaintext:
  * job names, hosts and log lines exist only inside the sealed box the
  * target device alone can open.
+ *
+ * /v1/tunnel/{id} and /v1/reach/{id} are Reach (docs/reach-protocol.md):
+ * a daemon holds a WebSocket at the first, the app POSTs sealed
+ * requests to the second, and a per-tunnel Durable Object copies bytes
+ * between them.  Same posture: ciphertext and routing metadata only.
  */
 
 import { entitlementPolicyFromEnv, verifyTransaction } from "./appstore";
-import { MAX_BODY_BYTES, parseDevice, parseEnvelope } from "./validate";
+import {
+  MAX_BODY_BYTES,
+  MAX_ENTITLEMENT_BODY_BYTES,
+  parseDevice,
+  parseEnvelope,
+} from "./validate";
 import { PAIR_AASA, PAIR_HTML } from "./pair";
 import { PRIVACY_HTML } from "./privacy";
+import {
+  isTunnelId,
+  limitsFromEnv,
+  locationHintFromCf,
+  maxPostBytes,
+  offersSubprotocol,
+  parseCredential,
+  parseReachPath,
+  reachEnabled,
+  SUBPROTOCOL,
+} from "./reach";
 import type { DeliverOutcome, DeviceStatus, Env } from "./types";
 
 export { DeviceState } from "./device";
 export { EntitlementState } from "./entitlement";
-
-/** POST /entitlement bodies carry a JWS with a three-certificate chain,
- * which is larger than an envelope but still well under this. */
-export const MAX_ENTITLEMENT_BODY_BYTES = 16384;
+export { TunnelState } from "./tunnel";
 
 const INFO = `cronstable-relay
 
@@ -28,9 +46,12 @@ End-to-end encrypted push relay for cronstable (https://github.com/ptweezy/crons
 Daemons POST sealed alert ciphertexts here (relay protocol v1); the relay
 coalesces, rate-limits and forwards them to APNs. Alert plaintext never
 exists on this service.
+Reach: daemons hold a WebSocket at /v1/tunnel/{id} and the app relays
+sealed requests through /v1/reach/{id}; the relay copies ciphertext only.
 
 Source:   https://github.com/ptweezy/cronstable-relay
 Protocol: https://github.com/ptweezy/cronstable/blob/main/docs/relay-protocol.md
+          https://github.com/ptweezy/cronstable/blob/main/docs/reach-protocol.md
 `;
 
 function json(
@@ -198,9 +219,86 @@ async function entitlement(request: Request, env: Env): Promise<Response> {
   return json(200, statusBody(status));
 }
 
+/**
+ * Reach's front door (docs/reach-protocol.md, "Relay HTTP mapping").
+ * Every check that needs no state runs here, so malformed traffic never
+ * creates or wakes a tunnel object; the object's Response comes back
+ * untouched so a relayed reply streams.
+ */
+async function reach(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!reachEnabled(env)) {
+    return json(404, { v: 1, error: "unknown tunnel" });
+  }
+  const route = parseReachPath(url.pathname);
+  if (route === null) return json(404, { v: 1, error: "not found" });
+  if (!isTunnelId(route.id)) {
+    return json(400, { v: 1, error: "malformed tunnel id" });
+  }
+  if (route.kind === "tunnel") {
+    if (request.method !== "GET") {
+      return json(405, { v: 1, error: "method not allowed" }, { allow: "GET" });
+    }
+    if ((request.headers.get("upgrade") ?? "").toLowerCase() !== "websocket") {
+      return json(400, { v: 1, error: "websocket upgrade required" });
+    }
+    if (!offersSubprotocol(request.headers.get("sec-websocket-protocol"))) {
+      return json(400, { v: 1, error: `subprotocol ${SUBPROTOCOL} required` });
+    }
+    // The object is placed near the daemon that dials in; the hint only
+    // matters on the get() that creates it (reach.ts, locationHintFromCf).
+    const stub = env.TUNNEL.get(env.TUNNEL.idFromName(route.id), {
+      locationHint: locationHintFromCf(request.cf),
+    });
+    return stub.fetch(request);
+  }
+  if (request.method !== "GET" && request.method !== "POST") {
+    return json(
+      405,
+      { v: 1, error: "method not allowed" },
+      { allow: "GET, POST" },
+    );
+  }
+  if (parseCredential(request.headers.get("authorization")) === null) {
+    return json(400, {
+      v: 1,
+      error: "authorization must be Reach <base64url credential>",
+    });
+  }
+  if (request.method === "POST") {
+    const type = (request.headers.get("content-type") ?? "").split(";")[0]!.trim();
+    if (type.toLowerCase() !== "application/octet-stream") {
+      return json(400, {
+        v: 1,
+        error: "content-type must be application/octet-stream",
+      });
+    }
+    const declared = request.headers.get("content-length");
+    if (declared === null) {
+      return json(411, { v: 1, error: "content-length required" });
+    }
+    const length = Number(declared);
+    if (!Number.isInteger(length) || length < 0) {
+      return json(400, { v: 1, error: "content-length is not a length" });
+    }
+    if (length > maxPostBytes(limitsFromEnv(env))) {
+      return json(413, { v: 1, error: "body too large" });
+    }
+  }
+  const stub = env.TUNNEL.get(env.TUNNEL.idFromName(route.id));
+  return stub.fetch(request);
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/v1/")) {
+      try {
+        return await reach(request, env, url);
+      } catch (err) {
+        console.error(JSON.stringify({ evt: "reach_error", err: String(err) }));
+        return json(502, { v: 1, error: "relay internal error" });
+      }
+    }
     if (url.pathname === "/privacy") {
       if (request.method !== "GET" && request.method !== "HEAD") {
         return json(
