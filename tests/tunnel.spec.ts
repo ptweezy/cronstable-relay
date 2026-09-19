@@ -703,10 +703,15 @@ describe("front Worker", () => {
   it("400s a malformed tunnel id on both routes", async () => {
     const credential = await mintCredential();
     const { identity } = await tunnel();
+    // Each one is malformed whatever the random id happens to be: a
+    // replace of `-`/`_` would leave an id without either untouched.
     const bad = [
       identity.id.slice(1),
       `${identity.id}A`,
-      identity.id.replace(/[-_]/g, "+"),
+      `+${identity.id.slice(1)}`,
+      // The last character's two spare bits set: 32 bytes have exactly one
+      // canonical spelling, and this is not it.
+      `${identity.id.slice(0, 42)}B`,
       "a".repeat(43),
     ];
     for (const id of bad) {
