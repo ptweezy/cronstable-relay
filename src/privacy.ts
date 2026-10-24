@@ -8,7 +8,7 @@
  * Self-contained HTML: no scripts, no external assets, theme-aware.
  */
 
-const EFFECTIVE = "October 19, 2026";
+const EFFECTIVE = "October 24, 2026";
 
 export const PRIVACY_HTML = `<!doctype html>
 <html lang="en">
@@ -87,24 +87,27 @@ for the relay include those addresses; we can view them for up to 31
 days and use them only to run the relay and protect it from abuse. The
 relay's source is public:
 <a href="https://github.com/ptweezy/cronstable-relay">github.com/ptweezy/cronstable-relay</a>.</p>
-<p>If you subscribe to Cronstable Pro, the app sends the App Store's
-signed record of your purchase to the push relay that each of your
-paired servers uses. That is our relay unless the server's operator
-names another, and a relay someone else runs handles the record under
-its operator's own terms. Our relay uses the record to lift the free
-plan's monthly alert limit for your device. The relay checks that record
-itself, offline and without contacting Apple, and keeps, per push token,
-only the transaction identifier, the product, the purchase and expiry
-dates, whether the
-purchase is a production or sandbox one, when the relay checked it, and
-when the device's place on the purchase lapses. It also keeps, per
-transaction, a list of cryptographic hashes of the device tokens that
-purchase covers, each with the time the relay last saw it, so one purchase
-covers a bounded number of devices. If Apple refunds or revokes the
-purchase, the app stops sending the signed record, and the device's
-record lapses on the schedule below. When the relay receives a refunded
-or revoked copy of the signed record, it deletes the sending device's
-record if that record holds the refunded or revoked purchase. That
+<p>If you subscribe to Cronstable Pro and have paired a server, the app
+sends the App Store's signed record of your purchase to our relay over
+HTTPS, and the relay uses it to lift the free plan's monthly alert limit
+for your device. The app doesn't send the record to any other relay,
+even when a paired server uses a relay someone else runs, because only
+our relay can deliver notifications to this app. It sends the record
+again when the purchase renews or changes, when the device's push token
+changes, and at least once a day while you use the app. The relay checks
+that record itself, offline and without contacting Apple, and keeps, per
+push token, only the transaction identifier, the product, the purchase
+and expiry dates, whether the purchase is a production or sandbox one,
+when the relay checked it, and when the device's place on the purchase
+lapses. It also keeps, per transaction, a list of cryptographic hashes
+of the device tokens that purchase covers, each with the time the relay
+last saw it, so one purchase covers a bounded number of devices. If
+Apple refunds or revokes the purchase and no current subscription
+replaces it, the app sends our relay the refunded or revoked copy of the
+signed record once, and again only if the device's push token changes.
+When the relay receives a refunded or revoked copy, it deletes the
+sending device's record if that record holds the refunded or revoked
+purchase. That
 device's hash stays on the list and lapses on the schedule below, like
 every other hash. The relay also keeps a note of the revocation (when
 the App Store signed it and the date of the purchase it revokes) until
