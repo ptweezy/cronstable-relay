@@ -90,6 +90,29 @@ describe("parseEnvelope", () => {
     expect(errorOf({ ...valid(), collapseId: 12 })).toMatch(/collapseId/);
   });
 
+  it("accepts an optional flapId and leaves it out when absent", () => {
+    const flapId = "fedcba9876543210fedcba9876543210";
+    const res = parseEnvelope({ ...valid(), flapId });
+    if (!("envelope" in res)) throw new Error("expected success");
+    expect(res.envelope.flapId).toBe(flapId);
+    const bare = parseEnvelope(valid());
+    if (!("envelope" in bare)) throw new Error("expected success");
+    expect("flapId" in bare.envelope).toBe(false);
+  });
+
+  it("rejects a flapId outside the collapseId grammar", () => {
+    for (const flapId of [
+      "FEDCBA9876543210FEDCBA9876543210",
+      "abc",
+      "0".repeat(33),
+      12,
+      null,
+      "",
+    ]) {
+      expect(errorOf({ ...valid(), flapId })).toMatch(/flapId/);
+    }
+  });
+
   it("rejects unknown priorities", () => {
     expect(errorOf({ ...valid(), priority: "urgent" })).toMatch(/priority/);
     expect(errorOf({ ...valid(), priority: null })).toMatch(/priority/);

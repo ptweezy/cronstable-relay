@@ -13,4 +13,6 @@ itself:
   tests (the policy engine is pure functions in `src/policy.ts`
   precisely so its edges are cheap to pin).
 - Never commit key material. Real `.p8` files are gitignored; the only
-  key in the repo is the throwaway one the test suite signs with.
+  keys in the repo are the throwaway ones the test suite signs with: the
+  APNs key in `tests/fixtures/` and the App Store leaf keys in
+  `tests/fixtures/appstore/`.

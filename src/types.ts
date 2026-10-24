@@ -15,9 +15,17 @@ export interface Envelope {
   ciphertext: string;
   /** Opaque coalescing key: 32 lowercase hex characters. */
   collapseId: string;
+  /**
+   * Optional flap key: 32 lowercase hex characters, the same for every
+   * run of one alert.  When present, flap suppression counts forwards
+   * per flapId instead of per collapseId; dedup stays on collapseId.
+   */
+  flapId?: string;
   /** Maps to the APNs interruption level. */
   priority: "time-sensitive" | "passive";
-  /** True for daemon events (the notify: fan-out); routing metadata only. */
+  /** True for daemon events (the notify: fan-out).  Events draw from
+   * their own rate bucket, so a flood of job alerts cannot starve an
+   * approval gate. */
   event: boolean;
   /**
    * The sealing suite the ciphertext was produced under, forwarded to the
@@ -32,19 +40,19 @@ export interface Envelope {
 export interface DeliverOutcome {
   status: number;
   body: Record<string, unknown>;
-  /** Seconds to advertise in Retry-After on 429 responses. */
-  retryAfterS?: number;
 }
 
 /** What DeviceState.status() reports (POST /entitlement's 200 body,
  * before the worker renders instants as ISO strings). */
 export interface DeviceStatus {
   plan: "free" | "pro";
-  /** Present on "pro": epoch ms, or null for no expiry. */
+  /** Present on "pro": the purchase's expiry in epoch ms (in the past
+   * during the grace), or null for no expiry. */
   expiresAt?: number | null;
   /** Present on "pro". */
   environment?: "Production" | "Sandbox";
-  /** This period's forwards so far. */
+  /** On "free", this period's forwards that count toward the bound;
+   * on "pro", every forward this period. */
   used: number;
   /** The period's bound, or null when unlimited. */
   limit: number | null;
@@ -59,6 +67,9 @@ export interface Env {
   ENTITLEMENT: DurableObjectNamespace<
     import("./entitlement").EntitlementState & Rpc.DurableObjectBranded
   >;
+  /** POST / admission per client address (wrangler.jsonc).  Optional:
+   * a relay deployed without the binding skips the check. */
+  EDGE_LIMITER?: RateLimit;
 
   /** Apple push credentials; all set via `wrangler secret put`. */
   APNS_TEAM_ID?: string;
@@ -74,6 +85,8 @@ export interface Env {
    * belongs to the other environment, then remembers per device.
    */
   APNS_ENVIRONMENT?: "production" | "sandbox" | "auto";
+  /** Seconds one APNs send may take, its retry included (see apns.ts). */
+  RELAY_APNS_TIMEOUT_S?: string;
 
   /** Optional policy tunables (numbers as strings; see policy.ts). */
   RELAY_DEDUP_WINDOW_S?: string;
@@ -87,6 +100,8 @@ export interface Env {
   /** Monthly delivery quota (numbers as strings; see quota.ts). */
   RELAY_FREE_MONTHLY_FORWARDS?: string;
   RELAY_DIGEST_INTERVAL_S?: string;
+  /** Minimum seconds between burst digests (see quota.ts, BurstState). */
+  RELAY_BURST_DIGEST_INTERVAL_S?: string;
   /** Test hook: fixed-length quota periods in seconds instead of months. */
   RELAY_QUOTA_PERIOD_S?: string;
 
@@ -97,4 +112,6 @@ export interface Env {
   RELAY_APPLE_ROOT_CERT?: string;
   RELAY_PRO_DEVICES_PER_TRANSACTION?: string;
   RELAY_PRO_DEVICE_SLOT_TTL_S?: string;
+  /** Seconds past `expiresDate` a subscription still lifts the quota. */
+  RELAY_PRO_GRACE_S?: string;
 }

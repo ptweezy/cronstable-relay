@@ -108,6 +108,15 @@ export function parseEnvelope(raw: unknown): ParseResult {
   if (typeof collapseId !== "string" || !COLLAPSE_RE.test(collapseId)) {
     return { error: "collapseId must be 32 lowercase hex characters" };
   }
+  // Optional, with the collapseId's shape: the daemon's keyed hash of the
+  // alert's flap identity.
+  const flapId = o.flapId;
+  if (
+    flapId !== undefined &&
+    (typeof flapId !== "string" || !COLLAPSE_RE.test(flapId))
+  ) {
+    return { error: "flapId must be 32 lowercase hex characters" };
+  }
   const priority = o.priority;
   if (priority !== "time-sensitive" && priority !== "passive") {
     return { error: 'priority must be "time-sensitive" or "passive"' };
@@ -122,6 +131,7 @@ export function parseEnvelope(raw: unknown): ParseResult {
       device,
       ciphertext,
       collapseId,
+      ...(flapId === undefined ? {} : { flapId }),
       priority,
       event,
       suite,

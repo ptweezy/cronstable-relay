@@ -13,17 +13,25 @@
  *      dedupWindow ago is the same alert reported again (typically by
  *      another node of a cluster), so it is accepted without forwarding.
  *   2. Flap suppression: once flapMaxForwards notifications for one
- *      collapseId have been forwarded within flapWindow, the id is
+ *      flap key have been forwarded within flapWindow, the key is
  *      "cooled": at most one heartbeat forward per cooldownInterval
- *      until it has been quiet for flapReset.  A job failing in a tight
- *      loop pages once, then reminds, instead of streaming.
- *   3. Rate limit: a token bucket per device token bounds what one
- *      device can be sent regardless of how many ids are involved
- *      (the admission control an unauthenticated relay relies on).
+ *      until it has been quiet for flapReset.  The flap key is the
+ *      envelope's flapId, which stays the same across runs of one
+ *      alert, or its collapseId when it carries none.  A job failing
+ *      in a tight loop pages flapMaxForwards times, then reminds once
+ *      per cooldownInterval instead of streaming.  A per-run collapseId
+ *      without a flapId starts every run from a fresh history, so only
+ *      the flapId lets suppression engage across runs.
+ *   3. Rate limit: a token bucket per device and lane (daemon events
+ *      and alerts each get their own) bounds what one device can be
+ *      sent regardless of how many ids are involved (the admission
+ *      control an unauthenticated relay relies on).
  *
- * Suppressed and coalesced posts are accepted (2xx): the relay has
- * taken responsibility, and delivering nothing IS the policy.  Only the
- * rate limiter answers 429.
+ * Every decision is accepted (2xx): the relay has taken responsibility.
+ * Delivering nothing is the policy for coalesced and suppressed posts.
+ * The daemon never retries a relay POST, so an envelope that finds its
+ * lane's bucket empty ("rate_limit") is folded into a digest push
+ * rather than refused (device.ts).
  */
 
 export interface PolicyConfig {
@@ -40,10 +48,11 @@ export interface PolicyConfig {
  * Defaults, tuned for "a homelab's alerting", not a firehose:
  * - dedup 75 s: covers a cluster's near-simultaneous re-reports of one
  *   alert, plus a straggler node one minute-boundary behind.
- * - flap: more than 6 pages for the same alert id inside 30 min is a
- *   flap; after that one reminder per 30 min until 2 h of quiet.
- * - rate: bursts of 60 distinct alerts, refilling one every 2 s
- *   (a mass outage still pages; an abusive caller cannot stream).
+ * - flap: more than 6 pages for one flap key inside 30 min is a flap;
+ *   after that one reminder per 30 min until 2 h of quiet.
+ * - rate: bursts of 60 distinct alerts per lane, refilling one every
+ *   2 s (a mass outage still pages, and what the bucket holds back
+ *   folds into a digest; an abusive caller cannot stream).
  */
 export const DEFAULT_POLICY: PolicyConfig = {
   dedupWindowMs: 75_000,
@@ -55,7 +64,12 @@ export const DEFAULT_POLICY: PolicyConfig = {
   flapResetMs: 7_200_000,
 };
 
-/** Per-(device, collapseId) history. */
+/**
+ * Per-(device, collapseId) history, and the shape of a per-(device,
+ * flapId) flap row too.  A collapse row whose envelope carries a flapId
+ * keeps only what dedup reads (`lastForwardAt`, `lastSeenAt`); the flap
+ * row holds the forward history and the cooling.
+ */
 export interface CollapseState {
   /** Instant of the most recent successful forward; 0 = never. */
   lastForwardAt: number;
@@ -76,15 +90,41 @@ export interface BucketState {
 export type Admission = "forward" | "coalesce" | "suppress" | "rate_limit";
 
 export interface AdmitResult {
+  /** "rate_limit" means the lane's bucket is empty: the caller folds
+   * the envelope into a digest. */
   decision: Admission;
+  /** The collapse row's successor. */
   collapse: CollapseState;
+  /** The flap row's successor, present when admit() was given one. */
+  flap?: CollapseState;
+  /** The lane's bucket, refilled to `now`; a token is gone only on
+   * "forward". */
   bucket: BucketState;
-  /** On rate_limit: seconds until one token is available again. */
-  retryAfterS?: number;
+}
+
+/** The flap row of an envelope that carries a flapId: `row` is
+ * undefined when none is stored yet. */
+export interface FlapInput {
+  row: CollapseState | undefined;
 }
 
 function freshCollapse(): CollapseState {
   return { lastForwardAt: 0, forwards: [], cooledUntil: 0, lastSeenAt: 0 };
+}
+
+/** A working copy of a stored row, pruned to the flap window and seen at
+ * `now`. */
+function touched(
+  stored: CollapseState | undefined,
+  now: number,
+  cfg: PolicyConfig,
+): CollapseState {
+  const row: CollapseState = stored
+    ? { ...stored, forwards: [...stored.forwards] }
+    : freshCollapse();
+  row.forwards = row.forwards.filter((t) => now - t < cfg.flapWindowMs);
+  row.lastSeenAt = now;
+  return row;
 }
 
 function refill(
@@ -104,25 +144,30 @@ function refill(
 }
 
 /**
- * Admit one envelope.  Returns the decision plus the successor states,
- * which the caller persists; a token is consumed only by "forward".
- * A forward that then succeeds against APNs must be recorded with
- * `recordForward`; admission alone never marks one.
+ * Admit one envelope.  `bucketIn` is the bucket of the envelope's lane.
+ * Pass `flapIn` for an envelope that carries a flapId: flap suppression
+ * then reads and moves that row, and the collapse row serves dedup
+ * alone.  Without it the collapse row carries both.
+ *
+ * Returns the decision plus the successor states; a token is consumed
+ * only by "forward", so the caller persists the bucket only then (the
+ * refill is re-derivable from the stored one).  A forward is recorded
+ * with `forwardRows`; admission alone never marks one.
  */
 export function admit(
   collapseIn: CollapseState | undefined,
   bucketIn: BucketState | undefined,
   now: number,
   cfg: PolicyConfig,
+  flapIn?: FlapInput,
 ): AdmitResult {
-  const collapse: CollapseState = collapseIn
-    ? { ...collapseIn, forwards: [...collapseIn.forwards] }
-    : freshCollapse();
-  collapse.forwards = collapse.forwards.filter(
-    (t) => now - t < cfg.flapWindowMs,
-  );
-  collapse.lastSeenAt = now;
+  const collapse = touched(collapseIn, now, cfg);
+  const flap = flapIn === undefined ? collapse : touched(flapIn.row, now, cfg);
   const bucket = refill(bucketIn, now, cfg);
+  const result = (decision: Admission): AdmitResult =>
+    flapIn === undefined
+      ? { decision, collapse, bucket }
+      : { decision, collapse, flap, bucket };
 
   // 1. The same alert again, within the dedup window of the last copy
   //    actually forwarded (never of one merely seen: a stateless
@@ -132,41 +177,34 @@ export function admit(
     collapse.lastForwardAt !== 0 &&
     now - collapse.lastForwardAt < cfg.dedupWindowMs
   ) {
-    return { decision: "coalesce", collapse, bucket };
+    return result("coalesce");
   }
 
-  // 2. Flap suppression.
-  if (collapse.cooledUntil > now) {
-    // Every post while flapping keeps the id cooled; the state only
+  // 2. Flap suppression, on the flap row.
+  if (flap.cooledUntil > now) {
+    // Every post while flapping keeps the key cooled; the state only
     // thaws after flapReset of silence.
-    collapse.cooledUntil = now + cfg.flapResetMs;
+    flap.cooledUntil = now + cfg.flapResetMs;
     if (
-      collapse.lastForwardAt !== 0 &&
-      now - collapse.lastForwardAt < cfg.cooldownIntervalMs
+      flap.lastForwardAt !== 0 &&
+      now - flap.lastForwardAt < cfg.cooldownIntervalMs
     ) {
-      return { decision: "suppress", collapse, bucket };
+      return result("suppress");
     }
     // Heartbeat: one forward per cooldownInterval while the flap lasts.
-  } else if (collapse.forwards.length >= cfg.flapMaxForwards) {
-    collapse.cooledUntil = now + cfg.flapResetMs;
-    return { decision: "suppress", collapse, bucket };
+  } else if (flap.forwards.length >= cfg.flapMaxForwards) {
+    flap.cooledUntil = now + cfg.flapResetMs;
+    return result("suppress");
   }
 
-  // 3. Per-device rate limit.
-  if (bucket.tokens < 1) {
-    const deficit = 1 - bucket.tokens;
-    return {
-      decision: "rate_limit",
-      collapse,
-      bucket,
-      retryAfterS: Math.ceil(deficit / cfg.rateRefillPerSec),
-    };
-  }
+  // 3. The lane's rate limit.
+  if (bucket.tokens < 1) return result("rate_limit");
   bucket.tokens -= 1;
-  return { decision: "forward", collapse, bucket };
+  return result("forward");
 }
 
-/** Mark a successful forward (call only after APNs accepted it). */
+/** Mark a successful forward on one row (call only after APNs accepted
+ * it). */
 export function recordForward(
   collapse: CollapseState,
   now: number,
@@ -175,6 +213,24 @@ export function recordForward(
     ...collapse,
     forwards: [...collapse.forwards, now],
     lastForwardAt: now,
+  };
+}
+
+/**
+ * The rows a forward admitted at `now` stores.  With a flap row, that
+ * row takes the forward history and the collapse row records only the
+ * instant dedup measures from.
+ */
+export function forwardRows(
+  result: AdmitResult,
+  now: number,
+): { collapse: CollapseState; flap?: CollapseState } {
+  if (result.flap === undefined) {
+    return { collapse: recordForward(result.collapse, now) };
+  }
+  return {
+    collapse: { ...result.collapse, lastForwardAt: now },
+    flap: recordForward(result.flap, now),
   };
 }
 

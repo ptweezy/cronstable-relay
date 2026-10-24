@@ -5,7 +5,9 @@ import { defineConfig } from "vitest/config";
 
 // The integration tests need timing-sensitive policy windows small
 // enough to cross with sub-second sleeps, and a real (test-only) ES256
-// key so the JWT path runs for real; only APNs itself is mocked.
+// key so the JWT path runs for real; only APNs itself is mocked.  The
+// APNs budget is two seconds, so a send that never hears back gives up
+// on real timers inside a test's time limit.
 //
 // Two projects share one worker: "relay" runs every suite with the
 // monthly quota at its default (500 forwards, far above what any test
@@ -25,6 +27,7 @@ const bindings = {
   APNS_AUTH_KEY: fixture("test-apns-key.p8"),
   APNS_TOPIC: "test.cronstable.app",
   APNS_ENVIRONMENT: "auto",
+  RELAY_APNS_TIMEOUT_S: "2",
   RELAY_DEDUP_WINDOW_S: "2",
   RELAY_RATE_CAPACITY: "5",
   RELAY_RATE_REFILL_PER_S: "1",
@@ -45,6 +48,8 @@ const bindings = {
   TEST_APPSTORE_LEAF_KEY: fixture("appstore/leaf.key.pem"),
   TEST_APPSTORE_LEAF_NOMARKER: fixture("appstore/leaf-nomarker.der", "base64"),
   TEST_APPSTORE_LEAF_NOMARKER_KEY: fixture("appstore/leaf-nomarker.key.pem"),
+  TEST_APPSTORE_LEAF_LAPSED: fixture("appstore/leaf-lapsed.der", "base64"),
+  TEST_APPSTORE_LEAF_LAPSED_KEY: fixture("appstore/leaf-lapsed.key.pem"),
   TEST_APPSTORE_LEAF_EXPIRED: fixture("appstore/leaf-expired.der", "base64"),
   TEST_APPSTORE_LEAF_EXPIRED_KEY: fixture("appstore/leaf-expired.key.pem"),
   TEST_APPSTORE_OTHER_ROOT: fixture("appstore/other-root.der", "base64"),

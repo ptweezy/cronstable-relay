@@ -80,7 +80,7 @@ and scan the QR it shows.</p>
 <p><a class="open" id="openApp" href="#" hidden>Open in the Cronstable app</a></p>
 
 <h2>Getting the app</h2>
-<p>Cronstable for iPhone, iPad, and Apple Watch is the companion app for
+<p>Cronstable for iPhone and iPad is the companion app for
 the open-source
 <a href="https://github.com/ptweezy/cronstable">cronstable</a> scheduler:
 your jobs on your servers, with end-to-end encrypted push alerts. Install

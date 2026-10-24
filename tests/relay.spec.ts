@@ -107,6 +107,11 @@ describe("HTTP surface", () => {
       /version/,
     );
     expect((await post(envelope({ collapseId: "nope" }))).status).toBe(400);
+    const badFlap = await post(envelope({ flapId: "F".repeat(32) }));
+    expect(badFlap.status).toBe(400);
+    expect(((await badFlap.json()) as { error: string }).error).toMatch(
+      /flapId/,
+    );
   });
 
   it("413s an oversized body", async () => {
@@ -216,22 +221,78 @@ describe("delivery policy", () => {
     });
   }, 20_000);
 
-  it("rate-limits a device once the bucket is spent", async () => {
+  it("folds posts past the bucket into a digest instead of refusing them", async () => {
     const device = freshDevice();
     for (let i = 0; i < 5; i += 1) {
       expectApns(PROD, 200);
       const res = await post(envelope({ device }));
       expect(res.status).toBe(202);
     }
-    const limited = await post(envelope({ device }));
-    expect(limited.status).toBe(429);
-    expect(Number(limited.headers.get("retry-after"))).toBeGreaterThanOrEqual(
-      1,
-    );
-    expect(((await limited.json()) as { error: string }).error).toMatch(
-      /rate limited/,
-    );
+    // The bucket is spent: the next post is digested, and the digest
+    // goes out with it.
+    expectApns(PROD, 200);
+    const folded = await post(envelope({ device }));
+    expect(folded.status).toBe(202);
+    expect(folded.headers.get("retry-after")).toBeNull();
+    expect(await folded.json()).toEqual({ v: 1, outcome: "digested" });
+    expect(apnsRequests()).toHaveLength(6);
+    expect(apnsRequests()[5]!.headers["apns-collapse-id"]).toBe("digest");
+    // Inside the burst digest interval, the next fold sends nothing.
+    const again = await post(envelope({ device }));
+    expect(again.status).toBe(202);
+    expect(await again.json()).toEqual({ v: 1, outcome: "digested" });
+    expect(apnsRequests()).toHaveLength(6);
   }, 10_000);
+
+  it("suppresses per-run collapse ids that share a flapId", async () => {
+    // A job failing on every run: a fresh collapseId each time (the
+    // daemon's per-run id), one flapId for all of them.
+    const device = freshDevice();
+    const flapId = randCollapse();
+    const outcomes: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      if (i < 3) expectApns(PROD, 200);
+      const res = await post(envelope({ device, flapId }));
+      expect(res.status).toBe(202);
+      outcomes.push(((await res.json()) as { outcome: string }).outcome);
+    }
+    expect(outcomes).toEqual([
+      "forwarded",
+      "forwarded",
+      "forwarded",
+      "suppressed",
+      "suppressed",
+      "suppressed",
+    ]);
+    expect(apnsRequests()).toHaveLength(3);
+    // Each forward still carries its own run's collapse id to APNs.
+    const ids = apnsRequests().map((r) => r.headers["apns-collapse-id"]);
+    expect(new Set(ids).size).toBe(3);
+  }, 10_000);
+
+  it("keeps per-run collapse ids apart without a flapId", async () => {
+    const device = freshDevice();
+    for (let i = 0; i < 4; i += 1) {
+      expectApns(PROD, 200);
+      expect(await (await post(envelope({ device }))).json()).toEqual({
+        v: 1,
+        outcome: "forwarded",
+      });
+    }
+  });
+
+  it("dedups on the collapseId even when a flapId rides along", async () => {
+    expectApns(PROD, 200);
+    const body = envelope({ flapId: randCollapse() });
+    expect(await (await post(body)).json()).toEqual({
+      v: 1,
+      outcome: "forwarded",
+    });
+    expect(await (await post(body)).json()).toEqual({
+      v: 1,
+      outcome: "coalesced",
+    });
+  });
 });
 
 describe("APNs environments and errors", () => {
@@ -277,8 +338,11 @@ describe("APNs environments and errors", () => {
 
   it("502s on APNs server trouble and stays deliverable after", async () => {
     const body = envelope();
+    // The send retries a 500 once, then gives up.
+    expectApns(PROD, 500, JSON.stringify({ reason: "InternalServerError" }));
     expectApns(PROD, 500, JSON.stringify({ reason: "InternalServerError" }));
     expect((await post(body)).status).toBe(502);
+    expect(apnsRequests()).toHaveLength(2);
     // The failed forward was rolled back: the same alert forwards
     // as soon as APNs recovers, with no dedup shadow.
     expectApns(PROD, 200);

@@ -11,6 +11,20 @@
  * purchase marker extension on the leaf, and checks the JWS signature
  * with the leaf key.  Only then does it read the payload's claims.
  *
+ * The verifier judges certificate validity windows at the payload's
+ * `signedDate` with Apple's 60 s skew, the way Apple's own verifier does
+ * offline, so a transaction signed under a receipt-signing leaf Apple
+ * has since rotated out still verifies.  It judges the claims as of
+ * now: `expiresDate` against the relay's clock (less the grace), and any
+ * `revocationDate` revokes.
+ *
+ * Verification runs in two steps.  `authenticateTransaction` settles
+ * whether the App Store signed this transaction for this app's Pro
+ * products; `judgeTransaction` then decides whether it lifts the quota
+ * today.  A transaction that passes the first and fails the second
+ * (revoked, expired, wrong environment) comes back with its facts, so
+ * the caller can act on an authentic revocation.
+ *
  * The DER walker below is the minimum X.509 needs: tag/length/value
  * with long-form lengths, OIDs, UTCTime/GeneralizedTime, and the fixed
  * field order of an X.509 v3 TBSCertificate.  It rejects anything it
@@ -34,6 +48,8 @@ export const APPLE_ROOT_CA_G3_B64 =
   "6cHEFl4aXTQY2e3v9GwOAEZLuN+yRhHFD/3meoyhpmvOwgPUnPWTxnS4at+qIxUCMG1mihDK" +
   "1A3UT82NQz60imOlM27jbdoXt2QfyFMm+YhidDkLF1vLUagM6BgD56KyKA==";
 
+import { proGraceFromEnv } from "./quota";
+
 /** Apple's in-app purchase receipt-signing marker. */
 const IN_APP_PURCHASE_MARKER_OID = "1.2.840.113635.100.6.11.1";
 
@@ -50,9 +66,41 @@ const COORDINATE_BYTES: Record<Curve, number> = { "P-256": 32, "P-384": 48 };
 
 type Curve = "P-256" | "P-384";
 
+/** Apple's tolerance, either way, when judging a certificate's validity
+ * window at `signedDate` (MAX_SKEW in Apple's app-store-server-library).
+ * It also bounds how far `signedDate` may sit past the relay's clock. */
+export const CLOCK_SKEW_MS = 60_000;
+
+/** A transaction the App Store signed for this app: the chain and the
+ * signature verify, and it names the relay's bundle id, an allowlisted
+ * product, and an `originalTransactionId`.  Nothing here says it lifts
+ * the quota today; see `judgeTransaction`. */
+export interface AuthenticTransaction {
+  originalTransactionId: string;
+  /** Null when the payload carries none. */
+  transactionId: string | null;
+  productId: string;
+  /** Epoch ms of the purchase or renewal, or null when absent. */
+  purchaseDate: number | null;
+  /** Epoch ms at which the App Store signed this copy. */
+  signedDate: number;
+  /** Epoch ms, or null when the transaction carries no expiresDate. */
+  expiresAt: number | null;
+  /** Epoch ms of the refund or revocation, or null. */
+  revocationDate: number | null;
+  /** True when an upgrade within the subscription group superseded this
+   * transaction; Apple revokes the superseded one. */
+  isUpgraded: boolean;
+  /** The payload's `environment`, not yet checked. */
+  environment: unknown;
+}
+
 export interface VerifiedTransaction {
   originalTransactionId: string;
+  transactionId: string | null;
   productId: string;
+  purchaseDate: number | null;
+  signedDate: number;
   /** Epoch ms, or null when the transaction carries no expiresDate. */
   expiresAt: number | null;
   environment: "Production" | "Sandbox";
@@ -60,8 +108,19 @@ export interface VerifiedTransaction {
 
 export type VerifyResult =
   | { ok: true; transaction: VerifiedTransaction }
-  /** `malformed` separates "this is not a JWS with a 3-cert x5c" (400)
-   * from "it is one, and it does not verify" (401). */
+  | {
+      ok: false;
+      /** `malformed` separates "this is not a JWS with a 3-cert x5c"
+       * (400) from "it is one, and it does not verify" (401). */
+      malformed: boolean;
+      reason: string;
+      /** Present when the transaction is authentic and only its
+       * environment, revocation, or expiry rejected it. */
+      authentic?: AuthenticTransaction;
+    };
+
+export type AuthenticateResult =
+  | { ok: true; transaction: AuthenticTransaction }
   | { ok: false; malformed: boolean; reason: string };
 
 export interface EntitlementPolicy {
@@ -71,6 +130,9 @@ export interface EntitlementPolicy {
   bundleId: string;
   productIds: ReadonlySet<string>;
   acceptSandbox: boolean;
+  /** How long past `expiresDate` a transaction still verifies
+   * (`RELAY_PRO_GRACE_S`). */
+  graceMs: number;
 }
 
 export type VerifyOptions = EntitlementPolicy & { now: number };
@@ -84,6 +146,7 @@ export function entitlementPolicyFromEnv(env: {
   RELAY_APPLE_ROOT_CERT?: string;
   RELAY_PRO_PRODUCT_IDS?: string;
   RELAY_ACCEPT_SANDBOX_ENTITLEMENTS?: string;
+  RELAY_PRO_GRACE_S?: string;
 }): EntitlementPolicy {
   const rootB64 = env.RELAY_APPLE_ROOT_CERT?.trim() || APPLE_ROOT_CA_G3_B64;
   const list = (raw: string): string[] =>
@@ -99,6 +162,7 @@ export function entitlementPolicyFromEnv(env: {
       products.length > 0 ? products : list(DEFAULT_PRODUCT_IDS),
     ),
     acceptSandbox: env.RELAY_ACCEPT_SANDBOX_ENTITLEMENTS !== "false",
+    graceMs: proGraceFromEnv(env),
   };
 }
 
@@ -406,11 +470,11 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 
 // ------------------------------------------------------------------- JWS
 
-function malformed(reason: string): VerifyResult {
+function malformed(reason: string): AuthenticateResult {
   return { ok: false, malformed: true, reason };
 }
 
-function rejected(reason: string): VerifyResult {
+function rejected(reason: string): AuthenticateResult {
   return { ok: false, malformed: false, reason };
 }
 
@@ -427,10 +491,36 @@ function jsonObject(bytes: Uint8Array): Record<string, unknown> | null {
   return parsed as Record<string, unknown>;
 }
 
-export async function verifyTransaction(
+function isTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+/** An optional date claim: epoch ms, null when absent, or undefined
+ * when it holds anything but a timestamp. */
+function optionalTimestamp(value: unknown): number | null | undefined {
+  if (value === undefined) return null;
+  return isTimestamp(value) ? value : undefined;
+}
+
+/** Whether `cert`'s validity window covers `at`, give or take the skew. */
+function validAt(cert: ParsedCert, at: number): boolean {
+  return (
+    cert.notBefore <= at + CLOCK_SKEW_MS && at - CLOCK_SKEW_MS <= cert.notAfter
+  );
+}
+
+/**
+ * Step one: whether the App Store signed this transaction for this
+ * app's Pro products.  Checks, in order, the JWS shape, `signedDate`, the
+ * chain (pinned root, validity windows at `signedDate`, each link's
+ * signature, the purchase marker), the JWS signature, the bundle id, the
+ * product, and the `originalTransactionId`, then reads the dates the
+ * caller needs.
+ */
+export async function authenticateTransaction(
   jws: string,
   opts: VerifyOptions,
-): Promise<VerifyResult> {
+): Promise<AuthenticateResult> {
   const parts = jws.split(".");
   if (parts.length !== 3) return malformed("jws is not a compact JWS");
   const [headerB64, payloadB64, signatureB64] = parts as [
@@ -476,16 +566,25 @@ export async function verifyTransaction(
     ParsedCert,
   ];
 
-  // Chain: pinned root, validity windows, then each link's signature.
+  // Chain: pinned root, validity windows at signedDate, then each link's
+  // signature.  The JWS signature check below covers signedDate, so a
+  // forged one fails there.
   if (!bytesEqual(rootDer, opts.rootDer)) {
     return rejected("root is not Apple Root CA G3");
+  }
+  const signedDate = payload.signedDate;
+  if (!isTimestamp(signedDate)) {
+    return rejected("signedDate is not a timestamp");
+  }
+  if (signedDate > opts.now + CLOCK_SKEW_MS) {
+    return rejected("signedDate is in the future");
   }
   for (const [name, cert] of [
     ["leaf", leaf],
     ["intermediate", intermediate],
     ["root", root],
   ] as const) {
-    if (opts.now < cert.notBefore || opts.now > cert.notAfter) {
+    if (!validAt(cert, signedDate)) {
       return rejected(`${name} certificate is outside its validity window`);
     }
   }
@@ -510,7 +609,7 @@ export async function verifyTransaction(
   );
   if (!verified) return rejected("signature does not verify");
 
-  // Claims.
+  // Claims that make it this app's Pro transaction.
   if (payload.bundleId !== opts.bundleId) return rejected("bundle id mismatch");
   const productId = payload.productId;
   if (typeof productId !== "string" || !opts.productIds.has(productId)) {
@@ -523,28 +622,81 @@ export async function verifyTransaction(
   ) {
     return rejected("missing originalTransactionId");
   }
-  if (payload.revocationDate !== undefined) return rejected("revoked");
-  let expiresAt: number | null = null;
-  if (payload.expiresDate !== undefined) {
-    if (
-      typeof payload.expiresDate !== "number" ||
-      !Number.isFinite(payload.expiresDate)
-    ) {
-      return rejected("expiresDate is not a timestamp");
-    }
-    if (payload.expiresDate <= opts.now) return rejected("expired");
-    expiresAt = payload.expiresDate;
+  const purchaseDate = optionalTimestamp(payload.purchaseDate);
+  if (purchaseDate === undefined) {
+    return rejected("purchaseDate is not a timestamp");
   }
-  const environment = payload.environment;
-  if (environment === "Sandbox") {
-    if (!opts.acceptSandbox)
-      return rejected("sandbox transactions are refused");
-  } else if (environment !== "Production") {
-    return rejected("unknown environment");
+  const expiresAt = optionalTimestamp(payload.expiresDate);
+  if (expiresAt === undefined) return rejected("expiresDate is not a timestamp");
+  const revocationDate = optionalTimestamp(payload.revocationDate);
+  if (revocationDate === undefined) {
+    return rejected("revocationDate is not a timestamp");
   }
 
   return {
     ok: true,
-    transaction: { originalTransactionId, productId, expiresAt, environment },
+    transaction: {
+      originalTransactionId,
+      transactionId:
+        typeof payload.transactionId === "string"
+          ? payload.transactionId
+          : null,
+      productId,
+      purchaseDate,
+      signedDate,
+      expiresAt,
+      revocationDate,
+      isUpgraded: payload.isUpgraded === true,
+      environment: payload.environment,
+    },
   };
+}
+
+/**
+ * Step two: whether an authentic transaction lifts the quota at
+ * `opts.now`.  Checks the environment, then revocation, then expiry,
+ * which may lie up to `opts.graceMs` in the past.
+ */
+export function judgeTransaction(
+  tx: AuthenticTransaction,
+  opts: VerifyOptions,
+): VerifyResult {
+  const refuse = (reason: string): VerifyResult => ({
+    ok: false,
+    malformed: false,
+    reason,
+    authentic: tx,
+  });
+  const environment = tx.environment;
+  if (environment === "Sandbox") {
+    if (!opts.acceptSandbox) return refuse("sandbox transactions are refused");
+  } else if (environment !== "Production") {
+    return refuse("unknown environment");
+  }
+  if (tx.revocationDate !== null) return refuse("revoked");
+  if (tx.expiresAt !== null && tx.expiresAt <= opts.now - opts.graceMs) {
+    return refuse("expired");
+  }
+  return {
+    ok: true,
+    transaction: {
+      originalTransactionId: tx.originalTransactionId,
+      transactionId: tx.transactionId,
+      productId: tx.productId,
+      purchaseDate: tx.purchaseDate,
+      signedDate: tx.signedDate,
+      expiresAt: tx.expiresAt,
+      environment,
+    },
+  };
+}
+
+/** Both steps: authenticate, then judge. */
+export async function verifyTransaction(
+  jws: string,
+  opts: VerifyOptions,
+): Promise<VerifyResult> {
+  const authentic = await authenticateTransaction(jws, opts);
+  if (!authentic.ok) return authentic;
+  return judgeTransaction(authentic.transaction, opts);
 }

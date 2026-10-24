@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   admit,
   DEFAULT_POLICY,
+  forwardRows,
   policyFromEnv,
   recordForward,
   type BucketState,
@@ -132,13 +133,86 @@ describe("admit: flap suppression", () => {
   });
 });
 
+describe("admit: flap suppression keyed on a flapId", () => {
+  /** Forward a fresh collapse id per run, all sharing one flap row. */
+  function runs(times: number[], cfg = CFG) {
+    let flap: CollapseState | undefined;
+    const decisions: string[] = [];
+    for (const t of times) {
+      const res = admit(undefined, undefined, t, cfg, { row: flap });
+      decisions.push(res.decision);
+      flap = res.decision === "forward" ? forwardRows(res, t).flap : res.flap;
+    }
+    return { decisions, flap: flap! };
+  }
+
+  it("counts forwards across collapse ids on the flap row", () => {
+    const { decisions, flap } = runs([T0, T0 + 20_000, T0 + 40_000, T0 + 55_000]);
+    expect(decisions).toEqual(["forward", "forward", "forward", "suppress"]);
+    expect(flap.cooledUntil).toBe(T0 + 55_000 + CFG.flapResetMs);
+  });
+
+  it("heartbeats on the flap row's last forward", () => {
+    const { flap } = runs([T0, T0 + 20_000, T0 + 40_000, T0 + 55_000]);
+    // A new run 50 s (cooldownIntervalMs) after the last forward.
+    const res = admit(undefined, undefined, T0 + 90_000, CFG, { row: flap });
+    expect(res.decision).toBe("forward");
+  });
+
+  it("keeps dedup on the collapse row", () => {
+    const first = admit(undefined, undefined, T0, CFG, { row: undefined });
+    const rows = forwardRows(first, T0);
+    // The same run reported again: coalesced, whatever the flap row says.
+    const again = admit(rows.collapse, first.bucket, T0 + 1_000, CFG, {
+      row: rows.flap,
+    });
+    expect(again.decision).toBe("coalesce");
+    // The collapse row keeps no history of its own; the flap row does.
+    expect(rows.collapse.forwards).toEqual([]);
+    expect(rows.collapse.lastForwardAt).toBe(T0);
+    expect(rows.flap!.forwards).toEqual([T0]);
+  });
+
+  it("leaves the flap row out without a flapId", () => {
+    const res = admit(undefined, undefined, T0, CFG);
+    expect(res.flap).toBeUndefined();
+    expect(forwardRows(res, T0)).toEqual({
+      collapse: recordForward(res.collapse, T0),
+    });
+  });
+
+  it("bounds a job failing every minute to a few pages an hour", () => {
+    // Defaults; a fresh collapse id per run, as the daemon's per-run ids
+    // give, and one flapId for them all.  Bounded by flapMaxForwards plus
+    // one heartbeat per cooldownInterval.
+    const minute = 60_000;
+    const times = Array.from({ length: 60 }, (_, m) => T0 + m * minute);
+    const keyed = runs(times, DEFAULT_POLICY).decisions;
+    const bound =
+      DEFAULT_POLICY.flapMaxForwards +
+      Math.ceil(3_600_000 / DEFAULT_POLICY.cooldownIntervalMs);
+    expect(keyed.filter((d) => d === "forward").length).toBeLessThanOrEqual(
+      bound,
+    );
+    // Without the flapId each run starts from a fresh history.
+    let bucket: BucketState | undefined;
+    let unkeyed = 0;
+    for (const t of times) {
+      const res = admit(undefined, bucket, t, DEFAULT_POLICY);
+      bucket = res.bucket;
+      if (res.decision === "forward") unkeyed += 1;
+    }
+    expect(unkeyed).toBe(60);
+  });
+});
+
 describe("admit: rate limiting", () => {
   it("starts with a full bucket", () => {
     const res = admit(undefined, undefined, T0, CFG);
     expect(res.bucket.tokens).toBe(CFG.rateCapacity - 1);
   });
 
-  it("rate-limits when the bucket is empty and reports a retry", () => {
+  it("rate-limits when the bucket is empty, without spending", () => {
     const res = admit(
       undefined,
       { tokens: 0.5, ts: T0 },
@@ -146,7 +220,7 @@ describe("admit: rate limiting", () => {
       CFG,
     );
     expect(res.decision).toBe("rate_limit");
-    expect(res.retryAfterS).toBe(1); // ceil(0.5 deficit / 1 per s)
+    expect(res.bucket).toEqual({ tokens: 0.5, ts: T0 });
   });
 
   it("refills at the configured rate up to capacity", () => {

@@ -35,14 +35,16 @@ export interface ApnsMessage {
 }
 
 /**
- * The quota digest (relay-protocol.md, "Delivery quota"): a fixed,
- * passive push with no ciphertext, sent once per digest interval to a
- * device past its monthly bound.  Distinguished from an alert by the
- * absence of `ciphertext`.
+ * The digest (relay-protocol.md, "Digests"): a fixed push with no
+ * ciphertext that stands in for alerts the relay accepted but did not
+ * forward, past a free device's monthly bound (passive) or past a
+ * lane's rate bucket (time-sensitive when a folded alert was).
+ * Distinguished from an alert by the absence of `ciphertext`.
  */
 export interface ApnsDigest {
   deviceToken: string;
   topic: string;
+  priority: "time-sensitive" | "passive";
 }
 
 /** The digest's own collapse id; every digest replaces the last. */
@@ -59,7 +61,35 @@ export interface ApnsResult {
  * as stale after 10 minutes (relay-protocol.md), so there is no point
  * asking APNs to hold an undeliverable notification any longer.
  */
-const APNS_EXPIRATION_S = 600;
+export const APNS_EXPIRATION_S = 600;
+
+/**
+ * The digest carries no `ts`, so the replay window does not bind it, and
+ * it stays true until the app is opened.  APNs holds it for a phone that
+ * is off or out of coverage for up to a day; collapse id `digest` keeps
+ * a single copy however many are sent.
+ */
+export const DIGEST_EXPIRATION_S = 86_400;
+
+/**
+ * The whole budget for one send, retry and environment hop included
+ * (device.ts, `send`).  It stays under the daemon's default 10 s relay
+ * timeout, so the daemon hears the relay's own answer for an APNs stall
+ * instead of giving up on the relay.
+ */
+export const DEFAULT_APNS_TIMEOUT_S = 8;
+
+/** `RELAY_APNS_TIMEOUT_S` in ms. */
+export function apnsTimeoutFromEnv(env: {
+  RELAY_APNS_TIMEOUT_S?: string;
+}): number {
+  const raw = env.RELAY_APNS_TIMEOUT_S;
+  const parsed = raw === undefined ? NaN : Number(raw);
+  return (
+    (Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_APNS_TIMEOUT_S) *
+    1000
+  );
+}
 
 /**
  * Apple accepts provider tokens 20–60 minutes old; refresh at 45 so a
@@ -167,40 +197,54 @@ export function apnsPayload(msg: ApnsMessage): Record<string, unknown> {
  * decrypt, so the app's NSE stays out of it and the system shows the
  * text as is; `kind` lets the app route the tap.
  */
-export function digestPayload(): Record<string, unknown> {
+export function digestPayload(
+  priority: "time-sensitive" | "passive",
+): Record<string, unknown> {
   return {
     aps: {
       alert: {
         title: "cronstable",
         body: "Alerts are waiting. Open the app to see them.",
       },
-      "interruption-level": "passive",
+      "interruption-level": priority,
+      ...(priority === "time-sensitive" ? { sound: "default" } : {}),
     },
     v: 1,
     kind: "digest",
   };
 }
 
+/**
+ * One request to one APNs host.  `signal` bounds the whole exchange:
+ * the request, the response headers, and the body read.  When it fires,
+ * the call throws, as it does when the connection fails.
+ */
 export async function sendToApns(
   host: string,
   auth: ApnsAuth,
   msg: ApnsMessage | ApnsDigest,
+  signal: AbortSignal,
   nowS: number = Math.floor(Date.now() / 1000),
 ): Promise<ApnsResult> {
   const jwt = await providerToken(auth, nowS);
   const alert = "ciphertext" in msg ? msg : null;
   const response = await fetch(`${host}/3/device/${msg.deviceToken}`, {
+    signal,
     method: "POST",
     headers: {
       authorization: `bearer ${jwt}`,
       "apns-topic": msg.topic,
       "apns-push-type": "alert",
-      "apns-priority": alert && alert.priority !== "passive" ? "10" : "5",
+      "apns-priority": msg.priority === "passive" ? "5" : "10",
       "apns-collapse-id": alert ? alert.collapseId : DIGEST_COLLAPSE_ID,
-      "apns-expiration": String(nowS + APNS_EXPIRATION_S),
+      "apns-expiration": String(
+        nowS + (alert ? APNS_EXPIRATION_S : DIGEST_EXPIRATION_S),
+      ),
       "content-type": "application/json",
     },
-    body: JSON.stringify(alert ? apnsPayload(alert) : digestPayload()),
+    body: JSON.stringify(
+      alert ? apnsPayload(alert) : digestPayload(msg.priority),
+    ),
   });
   const text = await response.text();
   if (response.status === 200) return { status: 200, reason: null };
