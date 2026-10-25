@@ -73,6 +73,6 @@
   "vars": {
     "APNS_TOPIC": "com.cronstable.app",
     "APNS_ENVIRONMENT": "auto",
-    "RELAY_ACCEPT_SANDBOX_ENTITLEMENTS": "true"
+    "RELAY_ACCEPT_SANDBOX_ENTITLEMENTS": "false"
   }
 }
